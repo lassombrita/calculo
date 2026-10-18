@@ -449,3 +449,45 @@
 - [ ] Implementar `integrallab/core/interpolation.py` con métodos Lagrange, Newton y/o splines cúbicos.
 - [ ] Conectar curvas interpoladas con la visualización 2D/3D y cálculo de revolución.
 - [ ] Empaquetado, README final y entrega.
+
+---
+
+## Sesión 15 — Fase 11: Refinamiento pedagógico, corrección LaTeX y motor 3D interactivo
+
+**Fecha:** 2026-10-18  
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0
+
+### Hecho
+
+1. **`integrallab/core/solids.py` — corrección de bugs LaTeX y SymPy:**
+   - Nueva función `_clean_latex(s: str) -> str`: elimina `\left|...\right|`, `\operatorname{Abs}` y `\text{Abs}` generados por SymPy cuando no puede determinar el signo, sustituyéndolos por paréntesis ordinarios.
+   - `_detect_integration_technique` mejorado: pre-expande el integrando, filtra `Abs(expr)^(1/2)` como artefacto, excluye sqrt de constantes y sqrt simplificables a racionales antes de activar sustitución trigonométrica. Polinomios simples ahora siempre van a "Regla de la Potencia".
+   - `_clean_latex` aplicada a **todos** los campos `*_latex` de `_build_volume_steps` y de los tres `VolumeResult` (`calculate_disk_volume`, `calculate_washer_volume`, `calculate_shell_volume`).
+
+2. **`integrallab/core/solids.py` — redacción pedagógica "Colombia Vibe":**
+   - Los 7 pasos de `_build_volume_steps` reescritos con lenguaje universitario colombiano coloquial y riguroso: "¡Listo parce!", "De una", "chicharrón algebraico", "listo el pollo", "pura carpintería", "cero estrés", "¡Eso es todo, we!".
+   - Los títulos de los pasos actualizados para mayor claridad.
+
+3. **`integrallab/ui/main_window.py` — paleta de colores Blue-Gray moderna:**
+   - Botón principal: `#2980b9` → `#0284c7` (azul académico), borde redondeado, icono `⚙`.
+   - `result_label`: color `#0f172a` (azul oscuro casi negro).
+   - `results_text` y `steps_text`: fondo `#ffffff`, borde `1px solid #cbd5e1`, `border-radius: 4px`.
+   - Botón "Exportar a PDF": verde `#10b981` → azul `#0284c7`.
+
+4. **`integrallab/ui/main_window.py` — NavigationToolbar2QT:**
+   - Import de `NavigationToolbar2QT` desde `matplotlib.backends.backend_qtagg`.
+   - Pestañas "Región 2D" y "Sólido 3D" ahora envuelven cada canvas en un `QWidget` contenedor con la barra de herramientas de Matplotlib (zoom, paneo, guardar) en la parte superior.
+
+5. **`integrallab/viz/canvas3d.py` — motor 3D interactivo:**
+   - `QTimer` de rotación automática: al generar un sólido, rota la cámara 360° en 4 segundos (80 frames × 50ms × 4.5°/frame), luego se detiene sola.
+   - Zoom con rueda del ratón: conectado a `scroll_event` de Matplotlib, modifica `axes.dist` (factor 0.88 in / 1.12 out, rango 2–30).
+
+6. **`tests/test_ui.py`** — 2 assertions actualizadas para reflejar el nuevo texto del botón (`⚙  Generar Gráficas y Sólido`) y el nuevo título del paso 1 (`Identificación del radio`).
+
+7. **Suite de pruebas:** **73 de 73 pruebas pasando al 100%** (`73 passed in 13.72s`).
+
+### Pendiente para el siguiente paso (Fase 12: Interpolación numérica y entrega final)
+
+- [ ] Implementar `integrallab/core/interpolation.py` con métodos Lagrange, Newton y/o splines cúbicos.
+- [ ] Conectar curvas interpoladas con la visualización 2D/3D y cálculo de revolución.
+- [ ] Empaquetado, README final y entrega.

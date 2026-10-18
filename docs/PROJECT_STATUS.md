@@ -1,12 +1,12 @@
 # Estado del proyecto — IntegralLab
 
 > Este archivo se actualiza **al terminar cada sesión** de trabajo.
-> Última actualización: Fase 9 (Exportación a PDF) completada — botón "Exportar a PDF" en pestaña Desarrollo con `QPrinter`/`QFileDialog`, habilitado tras generar sólido, 3 nuevos tests. 73 tests pasando al 100%.
+> Última actualización: **Fase 11 completada** — Corrección de bugs LaTeX (Abs→paréntesis, detector de técnica mejorado), redacción pedagógica con jerga universitaria colombiana, paleta de colores Blue-Gray `#0284c7`, NavigationToolbar2QT en pestañas 2D/3D, animación de rotación 3D automática (QTimer 4s/360°), zoom scroll en canvas 3D. 73 tests pasando al 100%.
 
 ## Fase actual
 
-✅ **Fase 9: Exportación y Generación de Reportes PDF** — Completada
-⏳ **Fase 10: Interpolación numérica y empaquetado final** — Siguiente tarea
+✅ **Fase 11: Refinamiento pedagógico, corrección LaTeX y motor 3D interactivo** — Completada
+⏳ **Fase 12: Interpolación numérica y empaquetado final** — Siguiente tarea
 
 ## Estado por fases
 
@@ -23,7 +23,8 @@
 | 8.1 Refinamiento LaTeX | Renderizado offline de fórmulas LaTeX a Base64 PNG en reportes pedagógicos y pasos | ✅ Completada |
 | **8.2 Motor pedagógico universitario** | **Detector de técnica de integración, 7 pasos, notación `[R(x)]²` estándar** | **✅ Completada** |
 | **9. Exportación a PDF** | **Botón "Exportar a PDF" en pestaña Desarrollo con `QPrinter`/`QFileDialog`** | **✅ Completada** |
-| 10. Interpolación y entrega | Métodos de interpolación numérica y empaquetado final | ⏳ Pendiente (Siguiente tarea) |
+| **11. Refinamiento pedagógico & 3D interactivo** | **Bugs LaTeX corregidos, jerga colombiana, paleta Blue-Gray, NavigationToolbar, rotación y zoom 3D** | **✅ Completada** |
+| 12. Interpolación y entrega | Métodos de interpolación numérica y empaquetado final | ⏳ Pendiente (Siguiente tarea) |
 
 ## Entorno verificado
 

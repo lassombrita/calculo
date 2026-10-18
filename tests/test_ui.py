@@ -54,7 +54,7 @@ def test_main_window_has_plot_button(window: MainWindow) -> None:
     """Verifica que el botón principal existe y tiene el texto esperado."""
     assert hasattr(window, "plot_button")
     assert isinstance(window.plot_button, QPushButton)
-    assert window.plot_button.text() == "Generar Gráficas y Sólido"
+    assert window.plot_button.text() == "⚙  Generar Gráficas y Sólido"
 
 
 def test_main_window_has_canvases_and_tabs(window: MainWindow) -> None:
@@ -259,7 +259,7 @@ def test_plot_populates_development_steps_tab(window: MainWindow) -> None:
 
     steps_text = window.steps_text.toPlainText()
     assert "Desarrollo Analítico Paso a Paso" in steps_text
-    assert "Identificación geométrica" in steps_text
+    assert "Identificación del radio" in steps_text
     assert "Planteamiento de la integral" in steps_text
     assert "Expansión" in steps_text
     assert "antiderivada" in steps_text or "Primitiva" in steps_text
