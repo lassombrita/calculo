@@ -38,8 +38,8 @@ class StepData:
 def latex_pixmap(expr: str) -> QPixmap:
     """Convierte LaTeX a QPixmap nítido (HiDPI) con tamaño natural."""
     pm = QPixmap()
-    # from integrallab.viz.latex import render_latex_png
-    # pm.loadFromData(render_latex_png(expr, Palette.TEXT, 16.0, int(96 * LATEX_DPR)))
+    # from integrallab.viz.latex_render import render_latex_to_png_bytes
+    # pm.loadFromData(render_latex_to_png_bytes(expr, fontsize=16, color=Palette.TEXT, dpi=int(96 * LATEX_DPR)))
     pm.loadFromData(b"")  # Placeholder - implementar latex.py después
     pm.setDevicePixelRatio(LATEX_DPR)
     return pm

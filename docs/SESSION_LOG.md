@@ -491,3 +491,29 @@
 - [ ] Implementar `integrallab/core/interpolation.py` con métodos Lagrange, Newton y/o splines cúbicos.
 - [ ] Conectar curvas interpoladas con la visualización 2D/3D y cálculo de revolución.
 - [ ] Empaquetado, README final y entrega.
+
+---
+
+## Sesión — Fase 11.1: Rediseño visual "glass / dark" y recuperación de regresión
+
+**Fecha:** 2026-10-18
+
+### Diagnóstico
+- Los commits `dcc62bb` y `0084699` ("sin ia") sobrescribieron `viz/canvas.py` (se perdió `PlotCanvas`), redujeron `viz/latex_render.py` de 165 a 31 líneas (se perdieron `latex_to_base64_html` y `render_latex_to_png_bytes`) y reescribieron `ui/main_window.py` (se perdieron barra lateral, pestañas 2D/3D/Desarrollo, flujo de sólidos y exportación a PDF). `import integrallab.viz` fallaba y la suite no podía ni importarse.
+- Último commit sano: `083efca` (73 tests en verde). El rediseño se reaplicó sobre ese estado **sin eliminar funcionalidad**.
+
+### Cambios
+1. **`ui/theme.py`** — tokens `Palette`, QSS global (GroupBox, inputs, combos, pestañas, botones, scrollbars, barra de estado, toolbar) y `build_palette()` (paleta Qt oscura; Matplotlib tiñe los iconos de su barra con `WindowText`).
+2. **`ui/widgets/glass.py`, `aurora.py`** — `GlassCard` (cristal, borde iluminado, sombra dinámica) y fondo aurora.
+3. **`ui/main_window.py`** — misma lógica y mismos atributos públicos; solo apariencia: sidebar y pestañas en `GlassCard`, estilos inline sustituidos por `objectName` (`PrimaryButton`, `Result`, `Paper`), revelado animado de la gráfica 2D tras cada cálculo. Barras de Matplotlib creadas con `parent=self` para heredar la paleta oscura.
+4. **`viz/canvas.py`** — `PlotCanvas` conserva su API; añade glow, ciclo de color semántico, tooltip magnético y `play_reveal()` (recorte animado, no toca los datos).
+5. **`viz/canvas3d.py`** — paneles translúcidos, leyenda en cristal, colores de paleta.
+6. **`ui/widgets/chat_panel.py`, `ai_pulse.py`** — componentes del futuro panel de IA (sin conectar). `latex_pixmap` usa ahora `render_latex_to_png_bytes` (antes era un placeholder que no renderizaba nada).
+7. **Corrección:** el encabezado del reporte "Desarrollo Analítico" usaba `linear-gradient`, no soportado por el texto enriquecido de Qt (título blanco sobre blanco). Ahora es color sólido.
+8. Eliminado `ui/workspace.py` (dependía de `PremiumCanvas`, que ya no existe; `MainWindow` es el contenedor).
+9. **Tests:** `tests/test_theme.py` (5) y `tests/test_canvas_premium.py` (5). **83 de 83 pasando.**
+
+### Pendiente
+- [ ] Fase 12: interpolación numérica (sin cambios).
+- [ ] Panel de IA (Ollama/Gemini): conectar `ChatPanel` cuando exista un backend; hoy no hay integración de IA en el proyecto.
+

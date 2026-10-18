@@ -65,3 +65,19 @@
 **Resultado:**
 - El dominio matemático `core.solids` expone `calculate_revolution_volume()`, `recommend_method()` y `generate_solid_mesh()`.
 - La futura capa de visualización (`viz.canvas3d`) consumirá exclusivamente `SolidMesh3D` con matrices NumPy puras.
+
+
+---
+
+## D4 — Shell oscuro "glass" con reportes en hoja clara
+
+**Fecha:** 2026-10-18 (Fase 11.1)
+**Decisión:** La aplicación usa un tema oscuro de alto contraste (tokens en `ui/theme.py`) con tarjetas de cristal. Los reportes pedagógicos (`results_text`, `steps_text`) se mantienen como una **hoja de papel clara** (`QTextEdit#Paper`) dentro del shell oscuro.
+
+**Contexto:**
+- Qt no ofrece `backdrop-filter`; el cristal se simula con relleno translúcido, borde de luz y sombra animada (`GlassCard`).
+- Los reportes son HTML con fórmulas LaTeX renderizadas en tinta oscura (`#0f172a`) y se exportan a PDF con `QPrinter`; invertirlos a tema oscuro obligaría a re-renderizar fórmulas y rompería la exportación.
+- El texto enriquecido de Qt no soporta `linear-gradient`; los encabezados usan colores sólidos.
+
+**Resultado:** `MainWindow` se auto-tematiza (`setPalette` + `setStyleSheet` antes de crear widgets) y `__main__` aplica fuentes/Fusion con `apply_theme`. `PlotCanvas` mantiene su API pública; el revelado animado usa recorte, de modo que los datos de las líneas nunca se alteran.
+

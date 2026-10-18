@@ -1,7 +1,7 @@
 # Estado del proyecto — IntegralLab
 
 > Este archivo se actualiza **al terminar cada sesión** de trabajo.
-> Última actualización: **Fase 11 completada** — Corrección de bugs LaTeX (Abs→paréntesis, detector de técnica mejorado), redacción pedagógica con jerga universitaria colombiana, paleta de colores Blue-Gray `#0284c7`, NavigationToolbar2QT en pestañas 2D/3D, animación de rotación 3D automática (QTimer 4s/360°), zoom scroll en canvas 3D. 73 tests pasando al 100%.
+> Última actualización: **Fase 11 completada** — Corrección de bugs LaTeX (Abs→paréntesis, detector de técnica mejorado), redacción pedagógica con jerga universitaria colombiana, paleta de colores Blue-Gray `#0284c7`, NavigationToolbar2QT en pestañas 2D/3D, animación de rotación 3D automática (QTimer 4s/360°), zoom scroll en canvas 3D. 83 tests pasando al 100%.
 
 ## Fase actual
 
@@ -24,6 +24,7 @@
 | **8.2 Motor pedagógico universitario** | **Detector de técnica de integración, 7 pasos, notación `[R(x)]²` estándar** | **✅ Completada** |
 | **9. Exportación a PDF** | **Botón "Exportar a PDF" en pestaña Desarrollo con `QPrinter`/`QFileDialog`** | **✅ Completada** |
 | **11. Refinamiento pedagógico & 3D interactivo** | **Bugs LaTeX corregidos, jerga colombiana, paleta Blue-Gray, NavigationToolbar, rotación y zoom 3D** | **✅ Completada** |
+| **11.1 Rediseño visual glass/dark** | **Tema oscuro, `GlassCard`, canvas premium (glow, tooltip, revelado), recuperación de regresión en `main_window`/`canvas`/`latex_render`** | **✅ Completada** |
 | 12. Interpolación y entrega | Métodos de interpolación numérica y empaquetado final | ⏳ Pendiente (Siguiente tarea) |
 
 ## Entorno verificado
@@ -63,11 +64,14 @@ Verificado en disco:
     - ✅ `integrallab/viz/__init__.py`
     - ✅ `integrallab/viz/canvas.py` — lienzo 2D (curvas y sombreado `fill_between`)
     - ✅ `integrallab/viz/canvas3d.py` — lienzo 3D para sólidos (Axes3D, superficies interior/exterior y eje)
+    - ✅ `integrallab/viz/style.py` — estilo Matplotlib (grid, glow, leyenda)
     - ✅ `integrallab/viz/latex_render.py` — renderizado offline de fórmulas LaTeX a Base64 PNG (MathText)
   - ✅ `integrallab/ui/` — interfaz gráfica PySide6 (orquestador visual)
     - ✅ `integrallab/ui/__init__.py`
+    - ✅ `integrallab/ui/theme.py` — tokens de diseño, QSS y paleta Qt oscura
+    - ✅ `integrallab/ui/widgets/` — `glass.py` (GlassCard), `aurora.py` (fondo), `ai_pulse.py` y `chat_panel.py` (futuro panel de IA, sin conectar)
     - ✅ `integrallab/ui/main_window.py` — MainWindow con exportación PDF (`export_to_pdf`, `_export_to_pdf_path`)
-- ✅ `tests/` — **73 pruebas pasando al 100%**
+- ✅ `tests/` — **83 pruebas pasando al 100%**
   - ✅ `tests/test_smoke.py` (3 tests)
   - ✅ `tests/test_parser.py` (4 tests)
   - ✅ `tests/test_operations.py` (4 tests)
@@ -77,6 +81,8 @@ Verificado en disco:
   - ✅ `tests/test_latex_render.py` (6 tests)
   - ✅ `tests/test_solids.py` (18 tests)
   - ✅ `tests/test_ui.py` (23 tests)
+  - ✅ `tests/test_theme.py` (5 tests)
+  - ✅ `tests/test_canvas_premium.py` (5 tests)
 
 
 ## Siguiente tarea atómica

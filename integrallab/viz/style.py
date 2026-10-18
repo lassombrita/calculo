@@ -35,6 +35,8 @@ def apply_mpl_theme() -> None:
         "axes.facecolor": "none",
         "savefig.facecolor": "none",
         "axes.unicode_minus": False,
+        "grid.color": "#2A3560",
+        "axes.edgecolor": SPINE,
         "lines.antialiased": True,
         "path.simplify": True,
     })
@@ -65,3 +67,16 @@ def glow(color: str, width: float = 2.4) -> list[pe.AbstractPathEffect]:
         pe.Stroke(linewidth=width + 3.5, foreground=color, alpha=0.16),
         pe.Normal(),
     ]
+
+
+def style_legend(legend) -> None:
+    """Leyenda en cristal oscuro, coherente con las tarjetas de la UI."""
+    if legend is None:
+        return
+    frame = legend.get_frame()
+    frame.set_facecolor(PANEL)
+    frame.set_edgecolor(EDGE)
+    frame.set_alpha(0.92)
+    frame.set_linewidth(0.8)
+    for text in legend.get_texts():
+        text.set_color(TEXT)

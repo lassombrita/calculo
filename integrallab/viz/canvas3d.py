@@ -17,6 +17,7 @@ import mpl_toolkits.mplot3d  # noqa: F401 - Registra projection='3d' en Matplotl
 from PySide6.QtCore import QTimer
 
 from integrallab.core.solids import AxisOrientation, SolidMesh3D
+from integrallab.viz.style import apply_mpl_theme, style_legend
 
 
 class PlotCanvas3D(FigureCanvasQTAgg):
@@ -43,8 +44,11 @@ class PlotCanvas3D(FigureCanvasQTAgg):
             height: Alto inicial de la figura en pulgadas.
             dpi: Resolución en puntos por pulgada.
         """
+        apply_mpl_theme()
         self.figure = Figure(figsize=(width, height), dpi=dpi)
+        self.figure.patch.set_alpha(0.0)
         super().__init__(self.figure)
+        self.setStyleSheet("background: transparent;")
         if parent is not None:
             self.setParent(parent)  # type: ignore[arg-type]
 
@@ -99,6 +103,12 @@ class PlotCanvas3D(FigureCanvasQTAgg):
         # Vista en perspectiva isométrica educativa
         self.axes.view_init(elev=25, azim=45)
         self.axes.grid(True, linestyle=":", alpha=0.5)
+        self.axes.set_facecolor("none")
+        for axis in (self.axes.xaxis, self.axes.yaxis, self.axes.zaxis):
+            axis.set_pane_color((1.0, 1.0, 1.0, 0.035))
+            axis.pane.set_edgecolor((1.0, 1.0, 1.0, 0.10))
+            axis.label.set_color("#8B95B5")
+        self.axes.tick_params(colors="#8B95B5", labelsize=8)
 
     @property
     def surface_collections(self) -> list[object]:
@@ -121,8 +131,8 @@ class PlotCanvas3D(FigureCanvasQTAgg):
     def plot_solid_mesh(
         self,
         mesh: SolidMesh3D,
-        color_outer: str = "#3498db",
-        color_inner: str = "#e74c3c",
+        color_outer: str = "#5CE1FF",
+        color_inner: str = "#FF6B8A",
         alpha: float = 0.6,
         show_axis: bool = True,
         clear: bool = True,
@@ -221,10 +231,10 @@ class PlotCanvas3D(FigureCanvasQTAgg):
             x_line,
             y_line,
             z_line,
-            color="#e67e22",
+            color="#FFB454",
             linestyle="--",
             linewidth=2.2,
             label=f"Eje de giro: {mesh.axis.label}",
         )
         self._axis_lines.extend(lines)
-        self.axes.legend(loc="upper right", framealpha=0.8)
+        style_legend(self.axes.legend(loc="upper right", framealpha=0.9))

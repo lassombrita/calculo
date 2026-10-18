@@ -11,10 +11,12 @@ Inicializar el entorno Qt (QApplication), instanciar la ventana principal
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
 from integrallab.ui.main_window import MainWindow
+from integrallab.ui.theme import apply_theme
 
 
 def main() -> int:
@@ -26,6 +28,7 @@ def main() -> int:
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
+    apply_theme(app, Path(__file__).parent / "ui" / "assets" / "fonts")
 
     window = MainWindow()
     window.show()

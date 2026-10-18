@@ -1,4 +1,4 @@
-"""Subpaquete de visualización para IntegralLab — Rediseño Premium.
+"""Subpaquete de visualización para IntegralLab.
 
 Provee integración con Matplotlib para la interfaz gráfica Qt en 2D y 3D,
 diseñado para consumir datos puramente numéricos generados por el dominio matemático.
@@ -6,19 +6,14 @@ diseñado para consumir datos puramente numéricos generados por el dominio mate
 
 from __future__ import annotations
 
-from integrallab.viz.canvas import PlotCanvas, PremiumCanvas
+from integrallab.viz.canvas import PlotCanvas
 from integrallab.viz.canvas3d import PlotCanvas3D
-from integrallab.viz.latex_render import latex_to_base64_html, render_latex_to_png_bytes, render_latex_png
-from integrallab.viz.style import apply_mpl_theme, style_axes, glow
+from integrallab.viz.latex_render import latex_to_base64_html, render_latex_to_png_bytes
 
 __all__ = [
-    "PlotCanvas",  # Legacy canvas (sin efectos premium)
-    "PremiumCanvas",  # Nuevo: reveal animation + tooltip magnético + glow
+    "PlotCanvas",
     "PlotCanvas3D",
     "latex_to_base64_html",
     "render_latex_to_png_bytes",
-    "render_latex_png",
-    "apply_mpl_theme",
-    "style_axes",
-    "glow",
 ]
+
