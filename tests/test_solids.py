@@ -24,6 +24,7 @@ from integrallab.core.solids import (
     Region2D,
     RevolutionAxis,
     SolidMethod,
+    SolutionStep,
     calculate_disk_volume,
     calculate_revolution_volume,
     calculate_shell_volume,
@@ -260,4 +261,66 @@ def test_generate_solid_mesh_vertical_axis() -> None:
     assert np.all(np.isfinite(mesh.x_outer))
     assert np.all(np.isfinite(mesh.y_outer))
     assert np.all(np.isfinite(mesh.z_outer))
+
+
+def test_volume_result_has_solution_steps() -> None:
+    """Verifica que el resultado del volumen incluya los pasos analíticos estructurados.
+
+    Con el motor pedagógico mejorado, la lista de pasos tiene 7 elementos:
+    1. Identificación geométrica
+    2. Planteamiento de la integral
+    3. Expansión del integrando
+    4. Técnica de integración identificada (nuevo paso pedagógico)
+    5. Antiderivada (primitiva F)
+    6. Evaluación en los límites (TFC)
+    7. Resultado final con constante de rotación
+    """
+    region = Region2D(f_expr="x^2", a=0, b=1, variable="x")
+    res = calculate_disk_volume(region, RevolutionAxis.x_axis())
+
+    assert res.is_success is True
+    assert len(res.steps) == 7
+
+    for idx, step in enumerate(res.steps, start=1):
+        assert isinstance(step, SolutionStep)
+        assert step.step_number == idx
+        assert step.title != ""
+        assert step.explanation != ""
+
+    # Paso 4 debe identificar la técnica de integración y contener el LaTeX del método
+    step4 = res.steps[3]
+    assert "Técnica" in step4.title
+    assert step4.expression_latex != ""
+
+
+def test_volume_result_steps_washers_identify_technique() -> None:
+    """Verifica que arandelas con funciones con radicales identifiquen la técnica correcta."""
+    region = Region2D(f_expr="sqrt(x)", g_expr="x^2", a=0, b=1, variable="x")
+    res = calculate_washer_volume(region, RevolutionAxis.x_axis())
+
+    assert res.is_success is True
+    assert len(res.steps) == 7
+
+    # El paso 4 debe mencionar la técnica identificada con una expresión LaTeX
+    step4 = res.steps[3]
+    assert step4.step_number == 4
+    assert "Técnica" in step4.title
+    assert step4.expression_latex != ""
+
+
+def test_volume_result_steps_use_bracket_notation_in_setup() -> None:
+    """Verifica que el planteamiento de la integral use notación universitaria [R(x)]² y no paréntesis."""
+    region = Region2D(f_expr="x^2", a=0, b=1, variable="x")
+    res = calculate_disk_volume(region, RevolutionAxis.x_axis())
+
+    assert res.is_success is True
+    step2 = res.steps[1]  # step_number == 2
+    assert step2.step_number == 2
+    # La expresión LaTeX del planteamiento debe usar corchetes universitarios [...]^2
+    assert "\\left[" in step2.expression_latex
+    assert "\\right]^2" in step2.expression_latex
+
+
+
+
 

@@ -218,6 +218,234 @@
 
 ### Pendiente para el siguiente paso (Fase 6: Visualización 3D interactiva)
 
-- [ ] Crear el widget de visualización 3D `integrallab/viz/canvas3d.py` (`PlotCanvas3D` con Matplotlib `Axes3D`).
-- [ ] Implementar el método `plot_solid_mesh(mesh: SolidMesh3D)` con soporte de iluminación, transparencia (`alpha`) y renderizado de superficies exterior e interior.
-- [ ] Crear pruebas unitarias para el lienzo 3D en `tests/test_canvas3d.py`.
+- [x] Crear el widget de visualización 3D `integrallab/viz/canvas3d.py` (`PlotCanvas3D` con Matplotlib `Axes3D`).
+- [x] Implementar el método `plot_solid_mesh(mesh: SolidMesh3D)` con soporte de iluminación, transparencia (`alpha`) y renderizado de superficies exterior e interior.
+- [x] Crear pruebas unitarias para el lienzo 3D en `tests/test_canvas3d.py`.
+
+---
+
+## Sesión 8 — Implementación del lienzo de visualización 3D para sólidos (Fase 6)
+
+**Fecha:** 2026-10-18
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6
+
+### Hecho
+
+1. **Autorización del usuario** para iniciar la Fase 6 (Lienzo de visualización 3D interactiva).
+2. **Creación de `integrallab/viz/canvas3d.py`**:
+   - Implementación de `PlotCanvas3D(FigureCanvasQTAgg)` configurando el subsistema `Axes3D` (`projection='3d'`).
+   - Método `plot_solid_mesh(mesh: SolidMesh3D, color_outer="#3498db", color_inner="#e74c3c", alpha=0.6, show_axis=True, clear=True)`:
+     - Renderizado de superficie exterior mediante `plot_surface` con iluminación (`shade=True`) y transparencia para visualización educativa.
+     - Renderizado condicional de superficie interior en geometrías huecas (arandelas / casquillos huecos) con tono diferenciado.
+     - Trazado tridimensional del eje de rotación con línea segmentada gruesa (`linestyle="--"`, `linewidth=2.0`, `color="#2c3e50"`) y etiqueta identificativa.
+   - Método `clear_canvas()` y propiedades `surface_collections` y `axis_lines` para inspección de estado y reseteo limpio.
+   - Cero dependencias de SymPy en el archivo; consume puramente las estructuras numéricas del motor `core.solids`.
+3. **Actualización de `integrallab/viz/__init__.py`**:
+   - Exportación de `PlotCanvas3D` junto a `PlotCanvas`.
+4. **Creación de la suite de pruebas `tests/test_canvas3d.py`**:
+   - 6 pruebas unitarias ejecutadas en entorno headless (`QT_QPA_PLATFORM=offscreen`):
+     - `test_canvas3d_instantiation`: verificación de la proyección `3d` y etiquetas cartesianas.
+     - `test_canvas3d_plot_solid_disks_outer_only`: sólido macizo (1 colección de superficie y trazado de eje).
+     - `test_canvas3d_plot_solid_washers_outer_and_inner`: sólido hueco con doble superficie (exterior e interior).
+     - `test_canvas3d_plot_vertical_axis_solid`: sólido con rotación sobre eje vertical desplazado ($x=2$).
+     - `test_canvas3d_clear_resets_scene`: comprobación de limpieza y reinicialización del espacio 3D.
+     - `test_canvas3d_rejects_invalid_mesh`: validación de rechazo defensivo ante mallas vacías o con dimensiones inconsistentes.
+5. **Ejecución de la suite completa de pruebas:**
+   - 53 de 53 pruebas aprobadas al 100% con pytest en 3.30 s (0 fallos, 0 advertencias).
+6. **Actualización de documentación:**
+   - `docs/PROJECT_STATUS.md` y `docs/SESSION_LOG.md` sincronizados.
+
+### Pendiente para el siguiente paso (Fase 7: UI de Sólidos y Exploración Interactiva)
+
+- [x] Incorporar `QTabWidget` en `MainWindow` para alternar entre "Vista 2D" y "Sólido 3D".
+- [x] Agregar controles para la segunda función $g(x)$, selección de eje ($y=k, x=h$) y selección de método.
+- [x] Integrar llamada reactiva a `calculate_revolution_volume` y renderizado automático en `PlotCanvas3D`.
+
+---
+
+## Sesión 9 — Reestructuración de la interfaz y panel interactivo para sólidos (Fase 7)
+
+**Fecha:** 2026-10-18
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6
+
+### Hecho
+
+1. **Autorización del usuario** para implementar la Fase 7 (UI de Sólidos y Exploración Interactiva).
+2. **Reestructuración de `integrallab/ui/main_window.py`**:
+   - Incorporación de `QTabWidget` central con pestañas "Región 2D" (con `PlotCanvas`) y "Sólido 3D" (con `PlotCanvas3D`).
+   - Panel lateral de configuración organizado en tres bloques lógicos:
+     - **Región 2D:** Entradas para $f(x)$ (`expression_input`), segunda curva opcional $g(x)$ (`g_expression_input`), y límites de integración $a$ y $b$ (`limit_a_input`, `limit_b_input`).
+     - **Configuración del Sólido 3D:** Selector de eje (`axis_combo`) con opciones Eje X, Eje Y, Horizontal ($y=k$) y Vertical ($x=h$); campo numérico para el eje desplazado (`axis_value_input`); selector de método (`method_combo`) con opciones Automático, Discos, Arandelas y Casquillos; y botón principal `"Generar Gráficas y Sólido"`.
+     - **Resultados y Análisis Pedagógico:** Etiqueta resumen (`result_label`) y visor de texto enriquecido de solo lectura (`results_text`) con el desglose del método empleado, volumen exacto, volumen numérico aproximado, integrando formulado y la justificación pedagógica generada por `core.solids.recommend_method`.
+   - Flujo reactivo desacoplado:
+     - Si solo se ingresan funciones sin límites, traza las curvas 2D y deja limpia la vista 3D invitando a ingresar $a$ y $b$.
+     - Si se ingresan límites, calcula el área 2D con sombreado de la región (entre $f$ y $g$, o entre $f$ y el eje 0), invoca `calculate_revolution_volume`, genera la malla tridimensional numérica con `generate_solid_mesh`, renderiza en `PlotCanvas3D` con superficies translúcidas y eje de rotación, y publica el informe pedagógico en HTML.
+     - Manejo de excepciones defensivo: errores sintácticos, límites $a \ge b$, o ejes inválidos se capturan y comunican amigablemente en la barra de estado y mediante `QMessageBox` (inhibido en tests headless) sin cierres inesperados.
+   - Respeto absoluto a la arquitectura: cero importaciones de SymPy en `MainWindow`.
+3. **Actualización de la suite de pruebas `tests/test_ui.py`**:
+   - Cobertura ampliada a 18 pruebas unitarias:
+     - Presencia y estructura del `QTabWidget` y ambos lienzos (`PlotCanvas` y `PlotCanvas3D`).
+     - Presencia de todos los controles de sólidos ($g(x)$, eje, método, valor de eje, visor pedagógico).
+     - Validación del botón `"Generar Gráficas y Sólido"`.
+     - Generación completa de sólido por discos ($f(x)=x^2$ en $[0, 1] \rightarrow \pi/5$).
+     - Generación completa de sólido por arandelas con dos funciones ($f(x)=\sqrt{x}$, $g(x)=x^2$ en $[0, 1] \rightarrow 3\pi/10$, con doble superficie exterior/interior).
+     - Generación con eje desplazado ($f(x)=x$ en $[0, 1]$ con eje $y=2 \rightarrow 5\pi/3$).
+     - Manejo amigable de errores: valor de eje inválido y límites invertidos ($a \ge b$).
+4. **Ejecución de la suite completa de pruebas:**
+   - 59 de 59 pruebas aprobadas al 100% con pytest en 6.79 s (0 fallos, 0 advertencias).
+5. **Actualización de documentación:**
+   - `docs/PROJECT_STATUS.md` y `docs/SESSION_LOG.md` sincronizados.
+
+### Pendiente para el siguiente paso (Fase 8: Pasos explicados y desarrollo analítico)
+
+- [x] Crear el generador analítico de pasos pedagógicos (modelado en `SolutionStep` dentro de `core.solids`).
+- [x] Detallar los pasos algebraicos: planteamiento geométrico, integrando expandido, antiderivada (primitiva), aplicación del Teorema Fundamental del Cálculo $F(b)-F(a)$ y factor $\pi$ o $2\pi$.
+- [x] Integrar el visor de pasos detallados en la UI (pestaña "Desarrollo" en `MainWindow`).
+
+---
+
+## Sesión 10 — Desarrollo analítico y paso a paso de la integral (Fase 8)
+
+**Fecha:** 2026-10-18
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6
+
+### Hecho
+
+1. **Aprobación del usuario** tras la prueba manual interactiva para avanzar a la Fase 8 (Desarrollo analítico paso a paso).
+2. **Ampliación del motor matemático en `integrallab/core/solids.py`**:
+   - Creación de la clase inmutable `SolutionStep` con campos: `step_number`, `title`, `explanation`, `expression_plain_text`, `expression_latex`.
+   - Modificación de `VolumeResult` para incorporar el campo `steps: list[SolutionStep] = field(default_factory=list)`.
+   - Implementación de la función auxiliar `_build_volume_steps`:
+     - **Paso 1:** Identificación geométrica (radio del disco, radios exterior/interior de la arandela o radio y altura del casquillo).
+     - **Paso 2:** Planteamiento formal de la integral del volumen de Riemann.
+     - **Paso 3:** Expansión y simplificación algebraica del integrando antes de integrar.
+     - **Paso 4:** Obtención exacta de la antiderivada (primitiva $F$) usando cálculo simbólico.
+     - **Paso 5:** Aplicación explícita del Teorema Fundamental del Cálculo: evaluación en $F(b)$, evaluación en $F(a)$ y diferencia $F(b) - F(a)$.
+     - **Paso 6:** Multiplicación por la constante de rotación ($\pi$ o $2\pi$) y obtención del volumen final exacto y numérico.
+   - Integración de la generación de pasos en los métodos de Discos (`calculate_disk_volume`), Arandelas (`calculate_washer_volume`) y Casquillos (`calculate_shell_volume`).
+   - Exportación de `SolutionStep` en `integrallab/core/__init__.py`.
+3. **Ampliación de la interfaz en `integrallab/ui/main_window.py`**:
+   - Incorporación de una tercera pestaña en `QTabWidget`: **"Desarrollo"** (`self.steps_text`), con visor de solo lectura de texto enriquecido.
+   - Implementación de `_display_steps_report` que renderiza tarjetas visuales modernas con el procedimiento algebraico completo, integrando explicaciones contextuales y expresiones matemáticas monospaciadas.
+   - Conexión de estado: limpieza y advertencias cuando no se ingresan límites o ante errores en el cálculo.
+4. **Actualización de la suite de pruebas unitarias**:
+   - `tests/test_solids.py`: agregada prueba `test_volume_result_has_solution_steps` verificando los 6 pasos analíticos estructurados (16 tests en total).
+   - `tests/test_ui.py`: actualizada la prueba de pestañas para verificar 3 pestañas (`Región 2D`, `Sólido 3D`, `Desarrollo`) y agregada `test_plot_populates_development_steps_tab` (19 tests en total).
+5. **Ejecución de la suite completa de pruebas:**
+   - 61 de 61 pruebas aprobadas al 100% con pytest en 10.60 s (0 fallos, 0 advertencias).
+6. **Actualización de documentación:**
+   - `docs/PROJECT_STATUS.md` y `docs/SESSION_LOG.md` sincronizados.
+
+### Pendiente para el siguiente paso (Fase 9: Interpolación numérica y entrega final)
+
+- [ ] Implementar `integrallab/core/interpolation.py` con métodos numéricos (Lagrange, splines o Newton).
+- [ ] Conectar datos discretos interpolados con la visualización y cálculo de revolución.
+- [ ] Auditoría y verificación global final de la aplicación.
+
+
+
+
+---
+
+## Sesión 11 — Refinamiento visual: Renderizado de fórmulas LaTeX offline
+
+**Fecha:** 2026-10-18
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6
+
+### Hecho
+
+1. **Requerimiento del usuario:** Sustituir la impresión de fórmulas matemáticas en texto crudo de SymPy en el panel pedagógico y en la pestaña "Desarrollo" por renderizado matemático real tipo LaTeX.
+2. **Creación del renderizador offline en `integrallab/viz/latex_render.py`**:
+   - Función `render_latex_to_png_bytes`: renderiza cadenas LaTeX con el motor MathText integrado de Matplotlib a imágenes PNG transparentes en memoria (`io.BytesIO`), recortadas al bounding box exacto del texto.
+   - Función `latex_to_base64_html`: convierte la imagen en etiquetas `<img src="data:image/png;base64,...">` optimizadas para widgets de texto enriquecido de Qt (`QTextEdit`/`QTextBrowser`), con fallback tolerante a fallos.
+   - Sanitización para compatibilidad entre LaTeX estándar/SymPy y MathText (`\text` a `\mathrm`, `\int\limits` a `\int`, etc.).
+   - Optimización de rendimiento mediante caché LRU en memoria (`@lru_cache(maxsize=256)`).
+   - Exportación de las funciones en la API pública de visualización `integrallab/viz/__init__.py`.
+3. **Actualización de la UI en `integrallab/ui/main_window.py`**:
+   - `_display_pedagogical_report`: inyección de la fórmula de volumen exacto $V = \dots$ renderizada en LaTeX y el planteamiento formal de la integral.
+   - `_display_steps_report`: inyección de las imágenes LaTeX para cada uno de los pasos pedagógicos intermedios (`expression_latex` de cada `SolutionStep`), y para la ecuación final del volumen.
+4. **Pruebas unitarias**:
+   - `tests/test_latex_render.py`: 6 pruebas unitarias nuevas cubriendo sanitización, generación de PNG válido, conversión a Base64, manejo de cadenas vacías y fallback ante expresiones no estándar.
+   - `tests/test_ui.py`: agregada prueba `test_plot_renders_latex_equations_in_reports` que verifica la inyección de imágenes Base64 en el HTML de resultados y desarrollo (20 tests en total).
+5. **Ejecución de la suite completa de pruebas:**
+   - 68 de 68 pruebas aprobadas al 100% con pytest (`68 passed in 17.68s`).
+6. **Actualización de documentación:** `docs/PROJECT_STATUS.md` y `docs/SESSION_LOG.md`.
+
+### Pendiente para el siguiente paso (Fase 9: Interpolación numérica y entrega final)
+
+- [ ] Implementar `integrallab/core/interpolation.py` con métodos numéricos (Lagrange, splines o Newton).
+- [ ] Conectar curvas interpoladas con la visualización 2D/3D y cálculo de revolución.
+- [ ] Empaquetado y entrega final de la aplicación.
+
+---
+
+## Sesión 12 — Motor pedagógico universitario: Detección automática de técnica de integración
+
+**Fecha:** 2026-10-18
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6
+
+### Hecho
+
+1. **Requerimiento del usuario:** Simular el razonamiento de un profesor universitario al resolver la integral de volumen: el motor debe identificar y explicar explícitamente la técnica de integración requerida, con fórmulas teóricas en LaTeX extraídas del material de la universidad.
+2. **Nueva función `_detect_integration_technique()` en `integrallab/core/solids.py`**:
+   - Inspecciona el integrando expandido usando la API de átomos de SymPy para clasificar la técnica requerida:
+     - **Sustitución trigonométrica**: detecta radicales cuadráticos con `sympy.Pow` de exponente `Rational(1,2)`. Genera las tres formas estándar: $\sqrt{a^2-u^2} \Rightarrow u=a\sin\theta$, $\sqrt{a^2+u^2} \Rightarrow u=a\tan\theta$, $\sqrt{u^2-a^2} \Rightarrow u=a\sec\theta$.
+     - **Integración por partes**: detecta productos (`sympy.Mul`) con factores trigonométricos, exponenciales o logarítmicos. Genera la fórmula $\int u\,dv = uv - \int v\,du$ con referencia a la regla mnemotécnica LIATE.
+     - **Sustitución simple**: detecta funciones compuestas con funciones trascendentes no multiplicadas, o potencias con base compuesta no trivial. Genera $\int f(g(x))g'(x)\,dx = \int f(u)\,du$ con el cambio de variable específico.
+     - **Regla de la potencia**: caso general para polinomios y sumas de monomios. Genera $\int x^n\,dx = \frac{x^{n+1}}{n+1}+C$.
+3. **Ampliación de `_build_volume_steps`** de 6 a 7 pasos analíticos:
+   - **Paso 4 (nuevo):** Identificación y justificación de la técnica de integración con fórmula teórica en LaTeX renderizable por el sistema de imágenes Base64.
+   - Pasos 4→5 (antiderivada), 5→6 (TFC), 6→7 (resultado final) renumerados.
+   - **Mejora adicional en paso 2 (Discos y Arandelas):** Notación universitaria con corchetes cuadrados: $V = \pi \int_a^b \left[R(x)\right]^2 dx$ en lugar de paréntesis, conforme al material académico.
+   - **Mejora en paso 6 (TFC):** La expresión LaTeX ahora muestra explícitamente la forma $\int_a^b f(x)\,dx = F(b) - F(a) = \dots$ en lugar de solo la evaluación implícita.
+4. **Pruebas unitarias en `tests/test_solids.py`** (18 tests total):
+   - `test_volume_result_has_solution_steps`: actualizado para validar 7 pasos y verificar que el paso 4 contiene `"Técnica"` en el título y una expresión LaTeX no vacía.
+   - `test_volume_result_steps_washers_identify_technique`: nuevo test — verifica que arandelas con radicales producen 7 pasos y el paso 4 identifica la técnica correctamente.
+   - `test_volume_result_steps_use_bracket_notation_in_setup`: nuevo test — verifica que el paso 2 de Discos contiene `\\left[` y `\\right]^2` en su LaTeX.
+5. **Ejecución de la suite completa de pruebas:**
+   - 70 de 70 pruebas aprobadas al 100% con pytest (`70 passed in 13.61s`).
+6. **Actualización de documentación:** `docs/PROJECT_STATUS.md` (fase 8.2 añadida, conteos actualizados) y `docs/SESSION_LOG.md`.
+
+### Pendiente para el siguiente paso (Fase 9: Interpolación numérica y entrega final)
+
+- [ ] Implementar `integrallab/core/interpolation.py` con Lagrange, Newton y/o splines cúbicos.
+- [ ] Conectar curvas interpoladas con la visualización 2D/3D y cálculo de revolución.
+- [ ] Empaquetado y entrega final de la aplicación.
+
+---
+
+## Sesión 14 — Fase 9: Exportación y Generación de Reportes PDF
+
+**Fecha:** 2026-10-18  
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0
+
+### Hecho
+
+1. **Importaciones nuevas en `integrallab/ui/main_window.py`:**
+   - `from PySide6.QtPrintSupport import QPrinter` — para generación de PDF de alta resolución.
+   - `QFileDialog` añadido al bloque de imports de `PySide6.QtWidgets`.
+
+2. **Refactorización de la pestaña "Desarrollo":**
+   - `steps_text` (QTextEdit) ya no se añade directamente al `QTabWidget`; ahora se envuelve en un `QWidget` contenedor (`dev_widget`) con `QVBoxLayout`.
+   - El botón `📄 Exportar a PDF` (`export_pdf_button`) se añade al final del layout, inicialmente **deshabilitado**.
+   - El botón se habilita (`setEnabled(True)`) únicamente tras una generación de sólido exitosa al final de `_process_region_and_solid`.
+
+3. **Nuevos métodos en `MainWindow`:**
+   - `export_to_pdf() -> None`: Abre `QFileDialog.getSaveFileName` para elegir ruta/nombre. Si `_show_dialogs` es `False` (modo headless/tests), retorna sin hacer nada. Delega la escritura a `_export_to_pdf_path`.
+   - `_export_to_pdf_path(file_path: str) -> bool`: Crea un `QPrinter` en modo PDF de alta resolución y llama a `self.steps_text.print_(printer)`, que preserva todo el HTML incluyendo imágenes Base64 de fórmulas LaTeX. Retorna `False` si `file_path` está vacío o si ocurre una excepción.
+
+4. **Nuevos tests en `tests/test_ui.py`** (3 tests nuevos, total 23 en el módulo):
+   - `test_export_pdf_button_exists_and_initially_disabled`: verifica que el atributo existe, es `QPushButton`, está deshabilitado y contiene "PDF" en su texto.
+   - `test_export_pdf_button_enabled_after_successful_plot`: genera un sólido con `x**2` en `[0, 1]` sobre Eje X y verifica que el botón queda habilitado.
+   - `test_export_pdf_with_empty_path_returns_false`: llama a `_export_to_pdf_path("")` directamente y verifica que retorna `False` sin lanzar excepción.
+
+5. **Ejecución de la suite completa de pruebas:**
+   - **73 de 73 pruebas aprobadas al 100%** con pytest (`73 passed in 16.69s`).
+
+6. **Actualización de documentación:** `docs/PROJECT_STATUS.md` (fase 9 marcada como completada, conteo de tests actualizado a 73, "Fase 10" añadida como siguiente) y este `docs/SESSION_LOG.md`.
+
+### Pendiente para el siguiente paso (Fase 10: Interpolación numérica y entrega final)
+
+- [ ] Implementar `integrallab/core/interpolation.py` con métodos Lagrange, Newton y/o splines cúbicos.
+- [ ] Conectar curvas interpoladas con la visualización 2D/3D y cálculo de revolución.
+- [ ] Empaquetado, README final y entrega.

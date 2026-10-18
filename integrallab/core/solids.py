@@ -104,6 +104,25 @@ class Region2D:
 
 
 @dataclass(frozen=True)
+class SolutionStep:
+    """Representa un paso intermedio en la resolución analítica de la integral.
+
+    Atributos:
+        step_number: Número secuencial del paso (1, 2, ...).
+        title: Título descriptivo del paso (ej. 'Planteamiento del radio').
+        explanation: Explicación pedagógica de la operación realizada.
+        expression_plain_text: Expresión matemática en texto plano legible.
+        expression_latex: Expresión en notación LaTeX (opcional).
+    """
+
+    step_number: int
+    title: str
+    explanation: str
+    expression_plain_text: str = ""
+    expression_latex: str = ""
+
+
+@dataclass(frozen=True)
 class VolumeResult:
     """Resultado del cálculo de volumen de un sólido de revolución.
 
@@ -117,6 +136,7 @@ class VolumeResult:
         integral_setup_latex: Expresión completa de la integral planteada en LaTeX.
         is_success: True si el cálculo concluyó sin errores.
         error_message: Detalle del error en caso de fallo.
+        steps: Lista ordenada de pasos analíticos de resolución.
     """
 
     method: SolidMethod
@@ -128,6 +148,7 @@ class VolumeResult:
     integral_setup_latex: str = ""
     is_success: bool = True
     error_message: str | None = None
+    steps: list[SolutionStep] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -251,9 +272,426 @@ def _order_curves_by_distance(
     return r_outer_dist, r_inner_dist, not is_inner_zero
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Métodos de Cálculo de Volumen
-# ─────────────────────────────────────────────────────────────────────────────
+def _detect_integration_technique(
+    integrand: sympy.Expr,
+    var_sym: sympy.Symbol,
+) -> tuple[str, str, str]:
+    """Detecta y clasifica la técnica de integración más adecuada para el integrando dado.
+
+    Evalúa la estructura algebraica del integrando usando átomos y tipos de SymPy para
+    identificar si se requiere: regla de la potencia, sustitución simple, integración
+    por partes o sustitución trigonométrica.
+
+    Solo identifica radicales genuinos (sqrt de expresiones NO numéricas y NO simplificables
+    a entero) para evitar falsos positivos en polinomios con Abs() residuales.
+
+    Args:
+        integrand: Expresión del integrando (expandida o en forma canónica).
+        var_sym: Símbolo de la variable de integración.
+
+    Returns:
+        Tupla (título_del_paso, explicación_pedagógica, expresión_latex_del_método).
+    """
+    # Pre-proceso: expandir y limpiar Abs residuales para análisis limpio
+    try:
+        integrand_clean = sympy.expand(integrand)
+    except Exception:
+        integrand_clean = integrand
+
+    # 1. Detectar radicales cuadráticos GENUINOS (Pow con exp=1/2, base no numérica)
+    #    Filtra Abs(expr)^(1/2) que SymPy puede generar internamente como artefacto.
+    sqrt_atoms = []
+    for a in integrand_clean.atoms(sympy.Pow):
+        if a.exp != sympy.Rational(1, 2):
+            continue
+        if not a.base.has(var_sym):
+            continue
+        if a.base.is_number:  # sqrt de constante → no cuenta
+            continue
+        # Excluir si la base es Abs(expr) — artefacto de _order_curves_by_distance
+        if isinstance(a.base, sympy.Abs):
+            continue
+        # Verificar que no simplifique a racional (ej. sqrt(4) = 2)
+        try:
+            simplified = sympy.sqrt(a.base)
+            if simplified.is_rational:
+                continue
+        except Exception:
+            pass
+        sqrt_atoms.append(a)
+
+    if sqrt_atoms:
+        title = "Técnica de integración: Sustitución trigonométrica"
+        explanation = (
+            "El integrando contiene un radical (raíz cuadrada) de una expresión en la variable. "
+            "Se analiza la forma del radicando para elegir el cambio de variable trigonométrico "
+            "que elimina el radical y convierte la integral en una resoluble directamente:"
+        )
+        latex = (
+            r"\sqrt{a^2 - u^2} \;\Rightarrow\; u = a\sin\theta"
+            r"\qquad"
+            r"\sqrt{a^2 + u^2} \;\Rightarrow\; u = a\tan\theta"
+            r"\qquad"
+            r"\sqrt{u^2 - a^2} \;\Rightarrow\; u = a\sec\theta"
+        )
+        return title, explanation, latex
+
+    # 2. Detectar funciones trigonométricas, exponenciales y logaritmos
+    trig_classes = (sympy.sin, sympy.cos, sympy.tan, sympy.cot, sympy.sec, sympy.csc)
+    trig_atoms = integrand_clean.atoms(*trig_classes)
+    exp_atoms = integrand_clean.atoms(sympy.exp)
+    log_atoms = integrand_clean.atoms(sympy.log)
+    is_product = isinstance(integrand_clean, sympy.Mul)
+
+    if trig_atoms or exp_atoms or log_atoms:
+        if is_product:
+            title = "Técnica de integración: Integración por partes"
+            explanation = (
+                "El integrando es un producto de una función polinomial y una función trascendente "
+                "(trigonométrica, exponencial o logarítmica). "
+                "Se aplica integración por partes siguiendo la regla mnemotécnica LIATE para elegir u y dv:"
+            )
+            latex = r"\int u \, dv = uv - \int v \, du"
+            return title, explanation, latex
+        else:
+            title = "Técnica de integración: Sustitución simple"
+            explanation = (
+                "El integrando contiene una función compuesta (trigonométrica o exponencial). "
+                "Se aplica el método de sustitución con el cambio de variable u = g(x):"
+            )
+            latex = (
+                r"\int f(g(x)) \cdot g'(x) \, dx = \int f(u) \, du"
+                r"\qquad \text{donde } u = g(x),\; du = g'(x)\,dx"
+            )
+            return title, explanation, latex
+
+    # 3. Potencias con base compuesta (cadena inversa → sustitución algebraica)
+    pow_compound = [
+        a for a in integrand_clean.atoms(sympy.Pow)
+        if a.exp not in (sympy.S.One, sympy.Rational(1, 2))
+        and not a.exp.is_negative
+        and a.base.has(var_sym)
+        and a.base != var_sym
+        and not a.base.is_number
+        and not isinstance(a.base, sympy.Abs)
+    ]
+    if pow_compound:
+        base_expr = pow_compound[0].base
+        deriv_base = sympy.diff(base_expr, var_sym)
+        title = "Técnica de integración: Sustitución simple"
+        explanation = (
+            "El integrando contiene una expresión compuesta elevada a una potencia (regla de la cadena inversa). "
+            f"Se aplica el cambio de variable u = {sympy.latex(base_expr)} para convertir la integral:"
+        )
+        latex = (
+            r"\int f(g(x)) \cdot g'(x) \, dx = \int f(u) \, du"
+            rf"\qquad \text{{donde }} u = {sympy.latex(base_expr)},\; du = {sympy.latex(deriv_base)}\,dx"
+        )
+        return title, explanation, latex
+
+    # 4. Caso general: polinomio / regla de la potencia
+    title = "Técnica de integración: Regla de la potencia"
+    explanation = (
+        "El integrando es un polinomio o una suma de monomios con potencias enteras de la variable. "
+        "Se aplica la regla de la potencia a cada término por separado:"
+    )
+    latex = r"\int x^n \, dx = \frac{x^{n+1}}{n+1} + C \qquad (n \neq -1)"
+    return title, explanation, latex
+
+
+def _clean_latex(s: str) -> str:
+    """Elimina notación de valor absoluto de cadenas LaTeX generadas por SymPy.
+
+    SymPy genera \\left|...\\right| cuando no puede determinar el signo de una
+    expresión. Esta función los convierte en paréntesis ordinarios para una
+    presentación pedagógica más limpia.
+
+    Args:
+        s: Cadena LaTeX potencialmente con notación de valor absoluto.
+
+    Returns:
+        Cadena LaTeX con los valores absolutos convertidos a paréntesis.
+    """
+    import re
+    # \\left|...\\right| → \\left(...\\right)
+    s = s.replace(r'\left|', r'\left(').replace(r'\right|', r'\right)')
+    # \\operatorname{Abs}\\left(...\\right) → \\left(...\\right)
+    s = re.sub(r'\\operatorname\{Abs\}\\left\(', r'\\left(', s)
+    # Abs(expr) simple sin \\left
+    s = re.sub(r'\\text\{Abs\}\(', r'(', s)
+    return s
+
+
+def _build_volume_steps(
+    method: SolidMethod,
+    region: Region2D,
+    axis: RevolutionAxis,
+    var_sym: sympy.Symbol,
+    sym_a: sympy.Expr,
+    sym_b: sympy.Expr,
+    integrand_core: sympy.Expr,
+    vol_sym: sympy.Expr,
+    num_val: float | None,
+    r_outer: sympy.Expr | None = None,
+    r_inner: sympy.Expr | None = None,
+    shell_radius: sympy.Expr | None = None,
+    shell_height: sympy.Expr | None = None,
+) -> list[SolutionStep]:
+    """Construye la lista pedagógica de pasos analíticos intermedios con explicaciones didácticas."""
+    try:
+        var = region.variable
+        integrand_core_expanded = sympy.expand(integrand_core)
+        antiderivative = sympy.integrate(integrand_core_expanded, var_sym)
+
+        eval_b = sympy.simplify(antiderivative.subs(var_sym, sym_b))
+        eval_a = sympy.simplify(antiderivative.subs(var_sym, sym_a))
+        diff_eval = sympy.simplify(eval_b - eval_a)
+
+        # Helper: limpia LaTeX generado por SymPy de valores absolutos residuales
+        def cl(expr: sympy.Expr) -> str:
+            return _clean_latex(sympy.latex(expr))
+
+        steps: list[SolutionStep] = []
+
+        if method == SolidMethod.DISKS:
+            r = r_outer if r_outer is not None else sympy.Symbol("R")
+            steps.append(
+                SolutionStep(
+                    step_number=1,
+                    title="1. Identificación del radio del disco",
+                    explanation=(
+                        f"¡Listo parce! Lo primero es identificar de qué tamaño son los discazos que vamos a ir apilando. "
+                        f"Cuando giramos la región alrededor del eje {axis.label}, cada corte perpendicular a ese eje "
+                        f"nos genera un disco sólido. El radio R({var}) de ese disco es la distancia entre la curva y el eje de giro. "
+                        f"Ojo: ese radio siempre debe ser positivo, así que nos aseguramos de tomar la distancia correcta."
+                    ),
+                    expression_plain_text=f"R({var}) = {r}",
+                    expression_latex=_clean_latex(f"R({var}) = {cl(r)}"),
+                )
+            )
+            steps.append(
+                SolutionStep(
+                    step_number=2,
+                    title="2. Planteamiento de la integral del volumen",
+                    explanation=(
+                        f"De una. El área de cada disco es A = π·R², y su espesor es d{var}. "
+                        f"Entonces el volumen diferencial es dV = π·[R({var})]²·d{var}. "
+                        f"Solo queda sumar (integrar) todos esos discazos a lo largo del intervalo [{sym_a}, {sym_b}]. "
+                        f"Eso nos da la integral que vamos a resolver paso a paso, parcero."
+                    ),
+                    expression_plain_text=f"V = pi * int_({sym_a})^({sym_b}) [R({var})]^2 d{var}",
+                    expression_latex=_clean_latex(
+                        f"V = \\pi \\int_{{{cl(sym_a)}}}^{{{cl(sym_b)}}}"
+                        f" \\left[{cl(r)}\\right]^2 \\, d{var}"
+                    ),
+                )
+            )
+            steps.append(
+                SolutionStep(
+                    step_number=3,
+                    title="3. Expansión y simplificación del integrando",
+                    explanation=(
+                        "Antes de integrar hay que simplificar ese chicharrón algebraico. "
+                        "Elevamos al cuadrado el radio y usamos álgebra para romper los paréntesis "
+                        "y obtener una suma de monomios ordenados. "
+                        "Así la integral se vuelve supermanejable, término a término. ¡Sin estrés!"
+                    ),
+                    expression_plain_text=f"[R({var})]^2 = {integrand_core_expanded}",
+                    expression_latex=_clean_latex(
+                        f"\\left[{cl(r)}\\right]^2 = {cl(integrand_core_expanded)}"
+                    ),
+                )
+            )
+
+        elif method == SolidMethod.WASHERS:
+            r_out = r_outer if r_outer is not None else sympy.Symbol("R_ext")
+            r_in = r_inner if r_inner is not None else sympy.Symbol("R_int")
+            steps.append(
+                SolutionStep(
+                    step_number=1,
+                    title="1. Identificación de radios exterior e interior",
+                    explanation=(
+                        f"¡Ojo acá, parcero! Como la región tiene dos curvas que la delimitan, "
+                        f"al girar alrededor del eje {axis.label} los cortes no son discos sólidos sino "
+                        f"arandelas (como una rosca o un aro). Necesitamos dos radios: "
+                        f"el externo R_ext({var}) (el más alejado del eje) y el interno R_int({var}) (el más cercano). "
+                        f"No los cruce, we, o el volumen le sale negativo."
+                    ),
+                    expression_plain_text=f"R_ext({var}) = {r_out},  R_int({var}) = {r_in}",
+                    expression_latex=_clean_latex(
+                        f"R_{{\\text{{ext}}}}({var}) = {cl(r_out)}, \\quad R_{{\\text{{int}}}}({var}) = {cl(r_in)}"
+                    ),
+                )
+            )
+            steps.append(
+                SolutionStep(
+                    step_number=2,
+                    title="2. Planteamiento de la integral del volumen",
+                    explanation=(
+                        f"Acuérdese de la clase: el área de una arandela es π(R_ext² − R_int²). "
+                        f"Esto viene de restar el área del disco chiquito al del grande. "
+                        f"Multiplicamos por d{var} para tener el volumen diferencial y luego integramos "
+                        f"en [{sym_a}, {sym_b}]. ¡De una vez coronamos el planteamiento!"
+                    ),
+                    expression_plain_text=f"V = pi * int_({sym_a})^({sym_b}) ([R_ext]^2 - [R_int]^2) d{var}",
+                    expression_latex=_clean_latex(
+                        f"V = \\pi \\int_{{{cl(sym_a)}}}^{{{cl(sym_b)}}}"
+                        f" \\left( \\left[{cl(r_out)}\\right]^2"
+                        f" - \\left[{cl(r_in)}\\right]^2 \\right) d{var}"
+                    ),
+                )
+            )
+            steps.append(
+                SolutionStep(
+                    step_number=3,
+                    title="3. Expansión y resta de los radios al cuadrado",
+                    explanation=(
+                        "Le metemos álgebra al asunto: elevamos al cuadrado cada radio y restamos. "
+                        "El objetivo es dejar el integrando como un polinomio o función reconocible "
+                        "para poder aplicar las técnicas de integración que ya conocemos. "
+                        "¡Sin miedo, parcero, esto es solo carpintería algebraica!"
+                    ),
+                    expression_plain_text=f"R_ext^2 - R_int^2 = {integrand_core_expanded}",
+                    expression_latex=_clean_latex(
+                        f"R_{{\\text{{ext}}}}^2 - R_{{\\text{{int}}}}^2 = {cl(integrand_core_expanded)}"
+                    ),
+                )
+            )
+
+        elif method == SolidMethod.SHELLS:
+            p = shell_radius if shell_radius is not None else sympy.Symbol("p")
+            h = shell_height if shell_height is not None else sympy.Symbol("h")
+            steps.append(
+                SolutionStep(
+                    step_number=1,
+                    title="1. Planteamiento geométrico del casquillo cilíndrico",
+                    explanation=(
+                        f"En este caso usamos casquillos cilíndricos: imagínese que en vez de cortar el sólido en "
+                        f"discos, lo pelamos como una cebolla en capas concéntricas. "
+                        f"Cada capa tiene radio medio p({var}) (su distancia al eje {axis.label}) "
+                        f"y altura h({var}) (qué tan alto es ese cilindrito). ¡Así de sencillo!"
+                    ),
+                    expression_plain_text=f"p({var}) = {p},  h({var}) = {h}",
+                    expression_latex=_clean_latex(
+                        f"p({var}) = {cl(p)}, \\quad h({var}) = {cl(h)}"
+                    ),
+                )
+            )
+            steps.append(
+                SolutionStep(
+                    step_number=2,
+                    title="2. Planteamiento de la integral del volumen",
+                    explanation=(
+                        f"Si 'desplegamos' el casquillo como una lámina, obtenemos un rectángulo de área "
+                        f"2π·p·h. Multiplicamos por d{var} y tenemos el volumen diferencial dV = 2π·p({var})·h({var})·d{var}. "
+                        f"Integramos en [{sym_a}, {sym_b}] y listo el pollo, we."
+                    ),
+                    expression_plain_text=f"V = 2*pi * int_({sym_a})^({sym_b}) p({var}) * h({var}) d{var}",
+                    expression_latex=_clean_latex(
+                        f"V = 2\\pi \\int_{{{cl(sym_a)}}}^{{{cl(sym_b)}}}"
+                        f" \\left({cl(p)}\\right) \\left({cl(h)}\\right) d{var}"
+                    ),
+                )
+            )
+            steps.append(
+                SolutionStep(
+                    step_number=3,
+                    title="3. Expansión algebraica del producto radio-altura",
+                    explanation=(
+                        "Expandimos el producto radio por altura para simplificar el integrando. "
+                        "Así nos queda una función más manejable pa' integrar. "
+                        "¡Dele con confianza, esto es álgebra básica!"
+                    ),
+                    expression_plain_text=f"p({var}) * h({var}) = {integrand_core_expanded}",
+                    expression_latex=_clean_latex(
+                        f"p({var}) \\cdot h({var}) = {cl(integrand_core_expanded)}"
+                    ),
+                )
+            )
+
+        # ── Paso 4: Identificación de la técnica de integración ─────────────────
+        tech_title, tech_explanation, tech_latex = _detect_integration_technique(
+            integrand_core_expanded, var_sym
+        )
+        steps.append(
+            SolutionStep(
+                step_number=4,
+                title=f"4. {tech_title}",
+                explanation=tech_explanation,
+                expression_plain_text=tech_title,
+                expression_latex=tech_latex,
+            )
+        )
+
+        # ── Pasos comunes: Antiderivada, TFC y Resultado ────────────────────────
+        factor_str = "2·π" if method == SolidMethod.SHELLS else "π"
+        factor_latex = "2\\pi" if method == SolidMethod.SHELLS else "\\pi"
+
+        steps.append(
+            SolutionStep(
+                step_number=5,
+                title="5. Obtención de la antiderivada (Primitiva F)",
+                explanation=(
+                    f"¡Breve! Aplicamos la técnica identificada en el paso anterior para encontrar "
+                    f"la primitiva F({var}). Recuerde: la primitiva es la función cuya derivada es nuestro integrando. "
+                    f"Por la regla de la potencia: ∫xⁿ dx = xⁿ⁺¹/(n+1) + C. Resolvemos término a término, parcero."
+                ),
+                expression_plain_text=f"F({var}) = ∫({integrand_core_expanded}) d{var} = {antiderivative}",
+                expression_latex=_clean_latex(
+                    f"F({var}) = \\int \\left({cl(integrand_core_expanded)}\\right) d{var}"
+                    f" = {cl(antiderivative)}"
+                ),
+            )
+        )
+
+        steps.append(
+            SolutionStep(
+                step_number=6,
+                title="6. Evaluación en los límites — Teorema Fundamental del Cálculo",
+                explanation=(
+                    f"Ahora aplicamos el Teorema Fundamental del Cálculo (el más importante del semestre, parcero). "
+                    f"Evaluamos la primitiva en el límite superior {sym_b} y le restamos la evaluación "
+                    f"en el límite inferior {sym_a}. Es pura carpintería: enchufar los números y restar. "
+                    f"¡Sin errores de signo, que ese es el error más común en parciales!"
+                ),
+                expression_plain_text=(
+                    f"F({sym_b}) = {eval_b}\n"
+                    f"F({sym_a}) = {eval_a}\n"
+                    f"F({sym_b}) - F({sym_a}) = {diff_eval}"
+                ),
+                expression_latex=_clean_latex(
+                    f"\\int_{{{cl(sym_a)}}}^{{{cl(sym_b)}}} f({var})\\,d{var}"
+                    f" = F({cl(sym_b)}) - F({cl(sym_a)})"
+                    f" = {cl(eval_b)} - {cl(eval_a)}"
+                    f" = {cl(diff_eval)}"
+                ),
+            )
+        )
+
+        approx_text = f" ≈ {num_val:.5f} u³" if num_val is not None else ""
+        steps.append(
+            SolutionStep(
+                step_number=7,
+                title="7. Volumen final — multiplicación por la constante de revolución",
+                explanation=(
+                    f"Por último, multiplicamos la diferencia obtenida por el factor {factor_str} "
+                    f"(que proviene de la fórmula del método, viene de rotar 2π radianes alrededor del eje). "
+                    f"¡Eso es todo, we! Ahí está el resultado exacto y su aproximación decimal. "
+                    f"Ya puede escribirlo en el parcial con toda la seguridad."
+                ),
+                expression_plain_text=f"V = {factor_str} · ({diff_eval}) = {vol_sym}{approx_text}",
+                expression_latex=_clean_latex(
+                    f"V = {factor_latex} \\cdot \\left({cl(diff_eval)}\\right) = {cl(vol_sym)}"
+                ),
+            )
+        )
+
+        return steps
+    except Exception:
+        return []
+
+
+
 
 def calculate_disk_volume(
     region: Region2D,
@@ -313,11 +751,13 @@ def calculate_disk_volume(
         )
 
         if has_void:
-            # Si hay vacío interior, redirigir conceptualmente o calcular como arandela
-            integrand = sympy.pi * (r_outer**2 - r_inner**2)
+            integrand_core = r_outer**2 - r_inner**2
+            chosen_method = SolidMethod.WASHERS
         else:
-            integrand = sympy.pi * (r_outer**2)
+            integrand_core = r_outer**2
+            chosen_method = SolidMethod.DISKS
 
+        integrand = sympy.pi * integrand_core
         vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
 
         try:
@@ -325,15 +765,33 @@ def calculate_disk_volume(
         except (TypeError, ValueError):
             num_val = None
 
+        steps = _build_volume_steps(
+            method=chosen_method,
+            region=region,
+            axis=axis,
+            var_sym=var_sym,
+            sym_a=sym_a,
+            sym_b=sym_b,
+            integrand_core=integrand_core,
+            vol_sym=vol_sym,
+            num_val=num_val,
+            r_outer=r_outer,
+            r_inner=r_inner if has_void else None,
+        )
+
         return VolumeResult(
-            method=SolidMethod.DISKS if not has_void else SolidMethod.WASHERS,
+            method=chosen_method,
             exact_plain_text=str(vol_sym),
-            exact_latex=sympy.latex(vol_sym),
+            exact_latex=_clean_latex(sympy.latex(vol_sym)),
             numeric_value=num_val,
             integrand_plain_text=str(integrand),
-            integrand_latex=sympy.latex(integrand),
-            integral_setup_latex=f"\\pi \\int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}} \\left({sympy.latex(r_outer**2)}\\right) d{region.variable}",
+            integrand_latex=_clean_latex(sympy.latex(integrand)),
+            integral_setup_latex=_clean_latex(
+                f"\\pi \\int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}}"
+                f" \\left({sympy.latex(r_outer**2)}\\right) d{region.variable}"
+            ),
             is_success=True,
+            steps=steps,
         )
     except Exception as exc:
         return VolumeResult(
@@ -397,7 +855,8 @@ def calculate_washer_volume(
             num_b,
         )
 
-        integrand = sympy.pi * (r_outer**2 - r_inner**2)
+        integrand_core = r_outer**2 - r_inner**2
+        integrand = sympy.pi * integrand_core
         vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
 
         try:
@@ -405,18 +864,33 @@ def calculate_washer_volume(
         except (TypeError, ValueError):
             num_val = None
 
+        steps = _build_volume_steps(
+            method=SolidMethod.WASHERS,
+            region=region,
+            axis=axis,
+            var_sym=var_sym,
+            sym_a=sym_a,
+            sym_b=sym_b,
+            integrand_core=integrand_core,
+            vol_sym=vol_sym,
+            num_val=num_val,
+            r_outer=r_outer,
+            r_inner=r_inner,
+        )
+
         return VolumeResult(
             method=SolidMethod.WASHERS,
             exact_plain_text=str(vol_sym),
-            exact_latex=sympy.latex(vol_sym),
+            exact_latex=_clean_latex(sympy.latex(vol_sym)),
             numeric_value=num_val,
             integrand_plain_text=str(integrand),
-            integrand_latex=sympy.latex(integrand),
-            integral_setup_latex=(
+            integrand_latex=_clean_latex(sympy.latex(integrand)),
+            integral_setup_latex=_clean_latex(
                 f"\\pi \\int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}} "
                 f"\\left[ {sympy.latex(r_outer)}^2 - {sympy.latex(r_inner)}^2 \\right] d{region.variable}"
             ),
             is_success=True,
+            steps=steps,
         )
     except Exception as exc:
         return VolumeResult(
@@ -488,7 +962,8 @@ def calculate_shell_volume(
         else:
             height_expr = g_parsed.sympy_expr - f_parsed.sympy_expr
 
-        integrand = 2 * sympy.pi * radius_expr * height_expr
+        integrand_core = radius_expr * height_expr
+        integrand = 2 * sympy.pi * integrand_core
         vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
 
         try:
@@ -496,18 +971,33 @@ def calculate_shell_volume(
         except (TypeError, ValueError):
             num_val = None
 
+        steps = _build_volume_steps(
+            method=SolidMethod.SHELLS,
+            region=region,
+            axis=axis,
+            var_sym=var_sym,
+            sym_a=sym_a,
+            sym_b=sym_b,
+            integrand_core=integrand_core,
+            vol_sym=vol_sym,
+            num_val=num_val,
+            shell_radius=radius_expr,
+            shell_height=height_expr,
+        )
+
         return VolumeResult(
             method=SolidMethod.SHELLS,
             exact_plain_text=str(vol_sym),
-            exact_latex=sympy.latex(vol_sym),
+            exact_latex=_clean_latex(sympy.latex(vol_sym)),
             numeric_value=num_val,
             integrand_plain_text=str(integrand),
-            integrand_latex=sympy.latex(integrand),
-            integral_setup_latex=(
+            integrand_latex=_clean_latex(sympy.latex(integrand)),
+            integral_setup_latex=_clean_latex(
                 f"2\\pi \\int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}} "
                 f"\\left({sympy.latex(radius_expr)}\\right) \\left({sympy.latex(height_expr)}\\right) d{region.variable}"
             ),
             is_success=True,
+            steps=steps,
         )
     except Exception as exc:
         return VolumeResult(
