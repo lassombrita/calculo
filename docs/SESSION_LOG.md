@@ -185,3 +185,39 @@
 - [ ] Incorporar botones para derivada simbólica e integral indefinida en la interfaz.
 - [ ] Incorporar barra de herramientas interactiva (`NavigationToolbar2QT`) para zoom y pan.
 - [ ] Iniciar el módulo de sólidos de revolución (`integrallab/core/solids.py`).
+
+---
+
+## Sesión 7 — Implementación del motor matemático de sólidos de revolución (Fase 5)
+
+**Fecha:** 2026-10-18
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6
+
+### Hecho
+
+1. **Autorización del usuario** para implementar el motor matemático de sólidos de revolución y resolver las discrepancias de fase.
+2. **Creación de `integrallab/core/solids.py`**:
+   - Modelado formal de datos: `AxisOrientation`, `RevolutionAxis` (con soporte para ejes estándar y desplazados $y=k$, $x=h$), `SolidMethod` (Discos, Arandelas, Casquillos), `Region2D` (con soporte para variable $x$ o $y$, función superior e inferior), `VolumeResult` y `MethodRecommendation`.
+   - Funciones de cálculo analítico y numérico: `calculate_disk_volume()`, `calculate_washer_volume()`, `calculate_shell_volume()` y `calculate_revolution_volume()`.
+   - Algoritmo de recomendación explicable `recommend_method()`: evalúa perpendicularidad vs paralelismo de cortes, detecta autointersecciones si el eje cruza el interior de la región y provee alternativas pedagógicas.
+   - Generador de mallas 3D numéricas `generate_solid_mesh()`: parametrización cilíndrica pura con NumPy para superficies exterior e interior en ejes horizontales y verticales, desacoplada de SymPy.
+3. **Actualización de `integrallab/core/__init__.py`**:
+   - Exposición pública de todas las nuevas clases y funciones del dominio de sólidos.
+4. **Creación de la suite de pruebas `tests/test_solids.py`**:
+   - Validación de los 4 casos matemáticos clave:
+     - Caso A (Discos): $f(x)=x^2$ en $[0, 1]$ sobre eje X $\rightarrow V = \pi/5$.
+     - Caso B (Arandelas): $f(x)=\sqrt{x}, g(x)=x^2$ en $[0, 1]$ sobre eje X $\rightarrow V = 3\pi/10$.
+     - Caso C (Casquillos): $f(x)=x^2$ en $[0, 1]$ sobre eje Y $\rightarrow V = \pi/2$.
+     - Caso D (Eje desplazado): $y=x$ en $[0, 1]$ sobre $y=2$ $\rightarrow V = 5\pi/3$.
+   - Pruebas adicionales: inversión de curvas (volumen siempre positivo), integración en variable $y$, rechazo de límites $a \ge b$, detección de autointersecciones, dimensiones y finitud de matrices NumPy en mallas 3D.
+5. **Ejecución de la suite completa de pruebas:**
+   - 47 de 47 pruebas aprobadas al 100% con pytest en 2.58 s.
+6. **Actualización de documentación:**
+   - `docs/TECHNICAL_DECISIONS.md`: Agregada decisión D3 (modelado de sólidos y parametrización de mallas en NumPy).
+   - `docs/PROJECT_STATUS.md`: Corrección del desfase de fases y registro del estado actual.
+
+### Pendiente para el siguiente paso (Fase 6: Visualización 3D interactiva)
+
+- [ ] Crear el widget de visualización 3D `integrallab/viz/canvas3d.py` (`PlotCanvas3D` con Matplotlib `Axes3D`).
+- [ ] Implementar el método `plot_solid_mesh(mesh: SolidMesh3D)` con soporte de iluminación, transparencia (`alpha`) y renderizado de superficies exterior e interior.
+- [ ] Crear pruebas unitarias para el lienzo 3D en `tests/test_canvas3d.py`.

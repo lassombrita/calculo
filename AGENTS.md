@@ -71,11 +71,13 @@ integrallab/                  ← raíz del proyecto
 | Fase | Estado actual |
 |---|---|
 | 1. Planificación | ✅ Completada |
-| 2. Base funcional (entorno + estructura) | 🔄 En curso |
-| 3. UI + parser | ⏳ Pendiente |
-| 4. Visualización | ⏳ Pendiente |
-| 5. Operaciones (derivadas, integrales) | ⏳ Pendiente |
-| 6. Interpolación | ⏳ Pendiente |
-| 7. Tests, empaquetado, entrega | ⏳ Pendiente |
+| 2. Base funcional (entorno + estructura) | ✅ Completada |
+| 3. UI básica + visualización 2D | ✅ Completada |
+| 4. Operaciones 2D (límites, sombreado, integral definida) | ✅ Completada |
+| 5. Motor de Sólidos de Revolución (Discos, Arandelas, Casquillos, mallas 3D) | ✅ Completada |
+| 6. Visualización 3D interactiva (canvas3d) | 🔄 Siguiente tarea |
+| 7. UI de Sólidos y exploración | ⏳ Pendiente |
+| 8. Pasos explicados y desarrollo analítico | ⏳ Pendiente |
+| 9. Interpolación, tests y entrega | ⏳ Pendiente |
 
 Véase `docs/PROJECT_STATUS.md` para el estado detallado.

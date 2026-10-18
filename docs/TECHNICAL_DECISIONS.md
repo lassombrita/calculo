@@ -46,3 +46,22 @@
 
 **Resultado:** Aclaración adoptada. `MainWindow` importa e incrusta `PlotCanvas` de forma legítima y controlada.
 
+
+---
+
+## D3 — Modelado matemático y parametrización de mallas 3D para sólidos de revolución
+
+**Fecha:** 2026-10-18 (Fase 5: Motor de sólidos de revolución)
+**Decisión:** Separar estrictamente el cálculo del volumen de revolución de la generación de la malla gráfica 3D dentro de `integrallab/core/solids.py`. Emplear SymPy para la integración simbólica y exacta, y NumPy para la parametrización de mallas numéricas (`SolidMesh3D`).
+
+**Contexto:**
+- El cálculo del volumen requiere precisión simbólica y rigurosa ($\pi/5$, $3\pi/10$, $\pi/2$, etc.) con formulaciones de cálculo integral (Discos, Arandelas, Casquillos), admitiendo variables $x$ o $y$ y ejes desplazados ($y=k$, $x=h$).
+- La visualización 3D requiere matrices bidimensionales $(X, Y, Z)$ para `plot_surface` de Matplotlib, pero no debe realizar cálculos matemáticos ni depender de SymPy.
+- La parametrización cilíndrica de revolución:
+  - Eje horizontal $y = k$: $X = t$, $Y = k + R(t) \cos(\theta)$, $Z = R(t) \sin(\theta)$
+  - Eje vertical $x = h$: $X = h + R(t) \cos(\theta)$, $Y = y(t)$, $Z = R(t) \sin(\theta)$
+  separa la superficie exterior y la interior (en arandelas o sólidos huecos), permitiendo renderizado 3D exacto y desacoplado.
+
+**Resultado:**
+- El dominio matemático `core.solids` expone `calculate_revolution_volume()`, `recommend_method()` y `generate_solid_mesh()`.
+- La futura capa de visualización (`viz.canvas3d`) consumirá exclusivamente `SolidMesh3D` con matrices NumPy puras.
