@@ -431,3 +431,38 @@ def test_plot_displays_curve_crossing_warning_in_results(window: MainWindow) -> 
     assert "Nota:" in report_html
     assert "cruzan" in report_html
 
+
+
+def test_plot_with_discrete_points_interpolation(window: MainWindow) -> None:
+    """El usuario introduce puntos discretos y la UI interpola la curva y calcula el sólido."""
+    window.expression_input.setText("(0, 0), (1, 1), (2, 4)")
+    window.limit_a_input.clear()
+    window.limit_b_input.clear()
+    window.plot_button.click()
+
+    # Los límites deben auto-completarse con el rango de los puntos [0, 2]
+    assert window.limit_a_input.text() == "0.0"
+    assert window.limit_b_input.text() == "2.0"
+    assert len(window.canvas.curve_lines) >= 1
+    assert "Interpolación" in window.statusBar().currentMessage()
+
+
+def test_ui_washers_on_vertical_axis_with_inversion(window: MainWindow) -> None:
+    """Con f(x)=x^2 en [0,1] sobre eje Y, Arandelas/Discos es aplicable mediante inversión a dy."""
+    window.expression_input.setText("x**2")
+    window.limit_a_input.setText("0")
+    window.limit_b_input.setText("1")
+    window.axis_combo.setCurrentIndex(1)  # Eje Y (vertical)
+
+    # Verificar que el selector no inhabilite arandelas
+    model = window.method_combo.model()
+    # Índice 2: Arandelas
+    item_washers = model.item(2)
+    assert item_washers.isEnabled() is True
+
+    # Seleccionar Arandelas
+    window.method_combo.setCurrentIndex(2)
+
+    # El resultado debe calcular el volumen correcto: pi / 2
+    report = window.results_text.toPlainText()
+    assert "pi/2" in report or "1.5708" in report

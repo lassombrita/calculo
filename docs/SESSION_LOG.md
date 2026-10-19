@@ -588,3 +588,37 @@
 - **139 pruebas ejecutadas y 100% aprobadas** (`139 passed in 25.17s`).
 
 
+---
+
+## Sesión — Fase 12: Integración en dy (Inversión Analítica) e Interpolación Numérica
+
+**Fecha:** 2026-10-19  
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0 · SymPy 1.14.0 · Matplotlib 3.11.2 · NumPy 2.5.4 · pytest 9.1.1
+
+### Paso 1: Integración respecto a y (Inversión analítica con SymPy)
+1. **`integrallab/core/solids.py`**:
+   - `invert_symbolic_expression`: Despeje analítico de variable independiente seleccionando la rama en el intervalo de integración.
+   - `invert_region_to_variable`: Inversión de regiones planas de variable x a variable y (y viceversa), calculando nuevos límites en y y transformando las curvas frontera.
+   - `calculate_revolution_volume`: Parámetro `allow_inversion=True`. Permite resolver métodos como Discos o Arandelas sobre ejes verticales y Casquillos sobre ejes horizontales realizando el cambio de variable a dy, e inyecta el paso pedagógico de despeje en la lista de `steps`.
+   - `can_invert_for_method`: Verifica si una función no compatible directamente puede resolverse mediante inversión.
+2. **`integrallab/ui/main_window.py`**:
+   - Selector de métodos actualizado para habilitar métodos invertibles con tooltip explicativo.
+
+### Paso 2: Fase 12 - Interpolación Numérica
+1. **`integrallab/core/interpolation.py`** (nuevo módulo):
+   - `DataPoint`, `InterpolationMethod`, `InterpolationResult`.
+   - `interpolate_lagrange`: Polinomio interpolador de Lagrange con bases $L_i(x)$ analíticas y pasos explicados.
+   - `interpolate_newton`: Polinomio interpolador de Newton mediante construcción recursiva de la tabla de diferencias divididas.
+   - `interpolate_cubic_spline`: Splines cúbicos naturales por tramos con continuidad $C^2$ (`Piecewise`).
+   - `interpolate`: Despachador de alto nivel con soporte para evaluación numérica.
+2. **`integrallab/core/parser.py`**:
+   - `parse_points`: Extracción y validación de puntos discretos en formatos `(x, y)`, `[x, y]`, delimitados por `;` o saltos de línea.
+   - `is_points_input`: Detección heurística de listas de puntos.
+3. **`integrallab/ui/main_window.py`**:
+   - Integración directa en el campo de función: si el usuario ingresa puntos discretos, se interpola la curva, se auto-completan los límites y se genera el sólido 3D y el cálculo de la integral.
+
+### Pruebas y Verificación
+- Creado `tests/test_interpolation.py` con 14 pruebas exhaustivas.
+- 4 nuevas pruebas en `tests/test_solids.py` para la inversión analítica en dy.
+- 2 nuevas pruebas en `tests/test_ui.py` para el flujo interactivo de interpolación y selección de métodos en ejes verticales.
+- **Suite completa: 159 pruebas pasando al 100% en 24.30s.**

@@ -465,3 +465,66 @@ def test_curve_crossing_detection_in_washers_and_shells() -> None:
 
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pruebas de Inversión Analítica de Variables (Integración en dy)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_invert_symbolic_expression_polynomial() -> None:
+    """Verifica que y = x^2 en [0, 1] se despeje correctamente a x = sqrt(y)."""
+    from integrallab.core.solids import invert_symbolic_expression
+    x = sympy.Symbol("x")
+    y = sympy.Symbol("y")
+    f_sym = x**2
+    res = invert_symbolic_expression(f_sym, x, y, 0.0, 1.0)
+    assert res == sympy.sqrt(y)
+
+
+def test_invert_symbolic_expression_linear() -> None:
+    """Verifica que y = 2*x + 1 se despeje a x = y/2 - 1/2."""
+    from integrallab.core.solids import invert_symbolic_expression
+    x = sympy.Symbol("x")
+    y = sympy.Symbol("y")
+    f_sym = 2 * x + 1
+    res = invert_symbolic_expression(f_sym, x, y, 0.0, 5.0)
+    assert sympy.simplify(res - (y / 2 - sympy.Rational(1, 2))) == 0
+
+
+def test_calculate_revolution_volume_with_inversion_disks_on_y_axis() -> None:
+    """f(x) = x^2 en [0, 1] girando en eje Y usando Discos (exige invertir a dy).
+
+    Volumen esperado: pi / 2 (el mismo que Casquillos en dx: 2pi int_0^1 x^3 dx = pi/2).
+    """
+    region = Region2D(f_expr="x**2", a=0, b=1, variable="x")
+    res = calculate_revolution_volume(
+        region,
+        RevolutionAxis.y_axis(),
+        method=SolidMethod.WASHERS,
+        allow_inversion=True,
+    )
+
+    assert res.is_success is True
+    assert res.numeric_value is not None
+    assert math.isclose(res.numeric_value, math.pi / 2.0, rel_tol=1e-5)
+    # Debe contener el paso analítico de inversión
+    assert any("inversión" in s.title.lower() or "despeje" in s.title.lower() for s in res.steps)
+
+
+def test_calculate_revolution_volume_with_inversion_washers_on_y_axis() -> None:
+    """Región entre sqrt(x) y x^2 en [0, 1] sobre eje Y por Arandelas (invierte a dy).
+
+    Volumen esperado: 3*pi / 10.
+    """
+    region = Region2D(f_expr="sqrt(x)", g_expr="x**2", a=0, b=1, variable="x")
+    res = calculate_revolution_volume(
+        region,
+        RevolutionAxis.y_axis(),
+        method=SolidMethod.WASHERS,
+        allow_inversion=True,
+    )
+
+    assert res.is_success is True
+    assert res.numeric_value is not None
+    assert math.isclose(res.numeric_value, 3.0 * math.pi / 10.0, rel_tol=1e-5)
+    assert any("inversión" in s.title.lower() or "despeje" in s.title.lower() for s in res.steps)

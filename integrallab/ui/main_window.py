@@ -29,8 +29,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from integrallab.core.interpolation import (
+    interpolate_cubic_spline,
+    interpolate_lagrange,
+)
 from integrallab.core.operations import integrate_definite
-from integrallab.core.parser import ExpressionParseError, parse_math_expression
+from integrallab.core.parser import (
+    ExpressionParseError,
+    is_points_input,
+    parse_math_expression,
+    parse_points,
+)
 from integrallab.core.sampling import robust_y_window, sample_expression
 from integrallab.core.solids import (
     AxisOrientation,
@@ -40,6 +49,7 @@ from integrallab.core.solids import (
     SolidMethod,
     VolumeResult,
     calculate_revolution_volume,
+    can_invert_for_method,
     generate_solid_mesh,
     is_method_compatible,
     recommend_method,
@@ -331,22 +341,40 @@ class MainWindow(QMainWindow):
         horizontal = probe.orientation == AxisOrientation.HORIZONTAL
         model = self.method_combo.model()
 
+        f_text = self.expression_input.text().strip()
+        lim_a = self.limit_a_input.text().strip()
+        lim_b = self.limit_b_input.text().strip()
+
+        probe_region = None
+        if f_text and lim_a and lim_b:
+            try:
+                probe_region = Region2D(
+                    f_expr=f_text,
+                    g_expr=self.g_expression_input.text().strip() or None,
+                    a=lim_a,
+                    b=lim_b,
+                    variable="x",
+                )
+            except Exception:
+                probe_region = None
+
         for combo_index, method in self._METHOD_BY_INDEX.items():
             item = model.item(combo_index)  # type: ignore[attr-defined]
-            applicable = is_method_compatible(method, probe)
+            direct = is_method_compatible(method, probe)
+            invertible = False
+            if not direct and probe_region is not None:
+                invertible = can_invert_for_method(probe_region, probe, method)
+
+            applicable = direct or invertible
             item.setEnabled(applicable)
-            if applicable:
+            if direct:
                 item.setToolTip("")
+            elif invertible:
+                item.setToolTip("Aplica invirtiendo analíticamente la función a términos de y (dy).")
             elif horizontal:
-                item.setToolTip(
-                    "Con un eje horizontal, los casquillos exigen integrar respecto a y "
-                    "(invertir f); esta versión integra respecto a x."
-                )
+                item.setToolTip("Los casquillos con eje horizontal requieren integrar en dy (no invertible analíticamente).")
             else:
-                item.setToolTip(
-                    "Con un eje vertical, discos y arandelas exigen integrar respecto a y "
-                    "(invertir f); esta versión integra respecto a x."
-                )
+                item.setToolTip("Discos y arandelas con eje vertical requieren integrar en dy (no invertible analíticamente).")
 
         current = self.method_combo.currentIndex()
         if current in self._METHOD_BY_INDEX and not model.item(current).isEnabled():  # type: ignore[attr-defined]
@@ -435,6 +463,27 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("⚠ El campo de función f(x) está vacío.")
             return
 
+        # 0. Soporte para entrada de puntos discretos (Interpolación numérica)
+        is_interpolated = False
+        interp_method_name = ""
+        if is_points_input(raw_f):
+            try:
+                pts = parse_points(raw_f)
+                interp_res = interpolate_lagrange(pts) if len(pts) <= 4 else interpolate_cubic_spline(pts)
+                if not interp_res.is_success:
+                    self._show_parse_error(interp_res.error_message or "Error en interpolación numérica.")
+                    return
+                raw_f = interp_res.polynomial_plain_text
+                is_interpolated = True
+                interp_method_name = interp_res.method.value.capitalize()
+                if not self.limit_a_input.text().strip():
+                    self.limit_a_input.setText(str(pts[0][0]))
+                if not self.limit_b_input.text().strip():
+                    self.limit_b_input.setText(str(pts[-1][0]))
+            except ExpressionParseError as exc:
+                self._show_parse_error(str(exc))
+                return
+
         # 1. Parseo y validación de expresiones matemáticas
         try:
             parsed_f = parse_math_expression(raw_f)
@@ -493,7 +542,10 @@ class MainWindow(QMainWindow):
             self.canvas.play_reveal()
             return
 
-        self._process_region_and_solid(raw_f, raw_g, parsed_f, parsed_g, a_text, b_text)
+        self._process_region_and_solid(
+            raw_f, raw_g, parsed_f, parsed_g, a_text, b_text,
+            is_interpolated=is_interpolated, interp_method_name=interp_method_name
+        )
         self.canvas.play_reveal()
 
     def _process_region_and_solid(
@@ -504,6 +556,8 @@ class MainWindow(QMainWindow):
         parsed_g: object | None,
         a_text: str,
         b_text: str,
+        is_interpolated: bool = False,
+        interp_method_name: str = "",
     ) -> None:
         """Calcula el área 2D, sombreado, volumen 3D y renderizado del sólido."""
         a_val = self._parse_limit_to_float(a_text)
@@ -611,8 +665,9 @@ class MainWindow(QMainWindow):
                 f" ⚠ {chosen_method.value} no aplica aquí (hay hueco interior); "
                 f"se usó {vol_res.method.value}."
             )
+        prefix = f"✔ Interpolación ({interp_method_name}) | " if is_interpolated else "✔ "
         self.status_bar.showMessage(
-            f"✔ Sólido generado: V = {vol_res.exact_plain_text}{approx_vol} "
+            f"{prefix}Sólido generado: V = {vol_res.exact_plain_text}{approx_vol} "
             f"({vol_res.method.value}){method_note}"
         )
 

@@ -9,7 +9,7 @@
 ## Fase actual
 
 ✅ **Fase 11: Refinamiento pedagógico, corrección LaTeX y motor 3D interactivo** — Completada
-⏳ **Fase 12: Interpolación numérica y empaquetado final** — Siguiente tarea
+✅ **Fase 12: Interpolación numérica y despeje analítico en dy** — Completada (159 tests passing)
 
 ## Estado por fases
 
@@ -28,7 +28,7 @@
 | **9. Exportación a PDF** | **Botón "Exportar a PDF" en pestaña Desarrollo con `QPrinter`/`QFileDialog`** | **✅ Completada** |
 | **11. Refinamiento pedagógico & 3D interactivo** | **Bugs LaTeX corregidos, jerga colombiana, paleta Blue-Gray, NavigationToolbar, rotación y zoom 3D** | **✅ Completada** |
 | **11.1 Rediseño visual glass/dark** | **Tema oscuro, `GlassCard`, canvas premium (glow, tooltip, revelado), recuperación de regresión en `main_window`/`canvas`/`latex_render`** | **✅ Completada** |
-| 12. Interpolación y entrega | Métodos de interpolación numérica y empaquetado final | ⏳ Pendiente (Siguiente tarea) |
+| **12. Interpolación y despeje analítico en dy** | **Interpolación numérica (Lagrange, Newton, Splines), parseo de puntos discretos y despeje analítico con SymPy en dy** | **✅ Completada (159 tests passing)** |
 
 ## Entorno verificado
 
@@ -63,7 +63,8 @@ Verificado en disco:
     - ✅ `integrallab/core/operations.py` — derivadas e integrales escalares
     - ✅ `integrallab/core/sampling.py` — muestreo para curvas 2D
     - ✅ `integrallab/core/adaptive.py` — muestreo adaptativo de curvas y polos de discontinuidad
-    - ✅ `integrallab/core/solids.py` — motor de sólidos con detector de técnica de integración
+    - ✅ `integrallab/core/interpolation.py` — interpolación numérica (Lagrange, Newton y Splines Cúbicos)
+    - ✅ `integrallab/core/solids.py` — motor de sólidos, recomendador, mallas 3D e inversión analítica a dy
   - ✅ `integrallab/viz/` — visualización desacoplada con Matplotlib
     - ✅ `integrallab/viz/__init__.py`
     - ✅ `integrallab/viz/canvas.py` — lienzo 2D (curvas, glow y sombreado `fill_between`)
@@ -75,24 +76,27 @@ Verificado en disco:
     - ✅ `integrallab/ui/theme.py` — tokens de diseño, QSS y paleta Qt oscura
     - ✅ `integrallab/ui/widgets/` — `glass.py` (GlassCard), `aurora.py` (fondo), `ai_pulse.py` y `chat_panel.py` (futuro panel de IA, sin conectar)
     - ✅ `integrallab/ui/main_window.py` — MainWindow con exportación PDF (`export_to_pdf`, `_export_to_pdf_path`)
-- ✅ `tests/` — **139 pruebas pasando al 100%**
+- ✅ `tests/` — **159 pruebas pasando al 100%**
   - ✅ `tests/test_smoke.py` (3 tests)
   - ✅ `tests/test_parser.py` (4 tests)
   - ✅ `tests/test_operations.py` (4 tests)
   - ✅ `tests/test_sampling.py` (8 tests)
   - ✅ `tests/test_adaptive.py` (26 tests)
+  - ✅ `tests/test_interpolation.py` (14 tests)
   - ✅ `tests/test_canvas.py` (7 tests)
   - ✅ `tests/test_canvas3d.py` (11 tests)
   - ✅ `tests/test_latex_render.py` (6 tests)
-  - ✅ `tests/test_solids.py` (28 tests)
+  - ✅ `tests/test_solids.py` (32 tests)
   - ✅ `tests/test_theme.py` (5 tests)
   - ✅ `tests/test_canvas_premium.py` (5 tests)
-  - ✅ `tests/test_ui.py` (32 tests)
+  - ✅ `tests/test_ui.py` (34 tests)
 
 ## Siguiente tarea atómica
 
-- [ ] **Fase 12: Interpolación numérica y empaquetado final**:
-  - Implementar en `integrallab/core/interpolation.py` métodos de interpolación numérica (Lagrange, Newton o splines cúbicos) a partir de puntos de datos discretos.
-  - Conectar curvas interpoladas al sistema de integración y revolución para calcular sólidos a partir de datos experimentales.
-  - Verificación global de calidad y preparación para distribución.
+- [x] **Fase 12: Interpolación numérica y despeje analítico en dy** (Completada):
+  - [x] Despeje analítico de variables con SymPy (`invert_region_to_variable`, `can_invert_for_method`).
+  - [x] Módulo `integrallab/core/interpolation.py` con Lagrange, Newton (diferencias divididas) y Splines Cúbicos naturales.
+  - [x] Adaptación de `parser.py` para admitir puntos discretos `(x, y)` en múltiples formatos.
+  - [x] Conexión fluida con la UI (auto-completado de límites, trazado y sólidos a partir de datos discretos).
+  - [x] 159 tests pasando al 100%.
 

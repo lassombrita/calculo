@@ -4,23 +4,24 @@ Aplicación de escritorio para **cálculo integral simbólico** y **sólidos de 
 
 ## Qué hace
 
-- Introduces `f(x)` (y opcionalmente `g(x)`) y los límites `a` y `b`.
+- Introduces `f(x)` (y opcionalmente `g(x)`) o un **conjunto de puntos discretos** `(x, y)` para interpolación numérica.
+- Soporta **Interpolación de Lagrange, Newton (diferencias divididas) y Splines Cúbicos naturales**.
 - Calcula la integral definida de forma simbólica (resultado exacto y aproximado).
 - Dibuja la región 2D sombreada entre las curvas.
 - Genera el **sólido de revolución** en 3D alrededor del eje X, el eje Y o un eje desplazado (`y = k`, `x = h`).
-- Calcula el volumen con **Discos**, **Arandelas** o **Casquillos cilíndricos**, o elige el método por ti en modo *Automático* y explica por qué.
+- Calcula el volumen con **Discos**, **Arandelas** o **Casquillos cilíndricos**, con **despeje analítico automático a dy** cuando el método lo requiere.
 - Muestra el **desarrollo analítico paso a paso** con fórmulas LaTeX renderizadas y lo exporta a **PDF**.
 
 ### Qué método admite cada eje
 
-La región se integra siempre respecto a `x`, así que cada método depende del eje de giro:
+El sistema determina la compatibilidad geométrica de cortes y soporta **despeje analítico automático a dy** mediante SymPy:
 
 | Eje de giro | Discos / Arandelas | Casquillos |
 |---|---|---|
-| Horizontal (`y = 0` o `y = k`) | ✅ | ❌ |
-| Vertical (`x = 0` o `x = h`) | ❌ | ✅ |
+| Horizontal (`y = 0` o `y = k`) | ✅ Directo (dx) | ✅ Con inversión analítica (dy) |
+| Vertical (`x = 0` o `x = h`) | ✅ Con inversión analítica (dy) | ✅ Directo (dx) |
 
-Los métodos que no aplican aparecen deshabilitados en el selector, con una explicación al pasar el cursor. Integrar respecto a `y` (invirtiendo las funciones) aún no está soportado.
+Si una función no es invertible analíticamente, el selector lo indicará en el tooltip.
 
 ## Instalación y uso
 
@@ -66,8 +67,8 @@ La regla de arquitectura es que la UI nunca habla con SymPy directamente: todo p
 
 Ver `docs/PROJECT_STATUS.md` para el detalle por fases.
 
-- ✅ Fases 1–11.1: núcleo matemático, visualización 2D/3D, desarrollo paso a paso, exportación a PDF y rediseño *glass/dark*.
-- ⏳ Fase 12: interpolación numérica (Lagrange, Newton, splines) y empaquetado final.
+- ✅ Fases 1–11.2: núcleo matemático, visualización 2D/3D, desarrollo paso a paso, exportación a PDF y rediseño *glass/dark*.
+- ✅ Fase 12: interpolación numérica (Lagrange, Newton, splines cúbicos), entrada de puntos discretos e inversión analítica a dy (159 pruebas pasando).
 - ⏳ Pendiente: conectar el panel de IA (`ChatPanel`), que hoy no tiene backend.
 
 ## Derechos de autor

@@ -236,6 +236,150 @@ def _evaluate_bounds(
     return num_a, num_b, sym_a, sym_b
 
 
+class InversionError(ValueError):
+    """Excepción lanzada cuando una curva o región no puede invertirse analíticamente."""
+
+
+def invert_symbolic_expression(
+    expr: sympy.Expr,
+    from_var: sympy.Symbol,
+    to_var: sympy.Symbol,
+    a_num: float,
+    b_num: float,
+) -> sympy.Expr:
+    """Despeja analíticamente from_var en función de to_var seleccionando la rama en [a_num, b_num].
+
+    Raises:
+        InversionError: Si SymPy no puede despejar analíticamente la expresión.
+    """
+    if not _SYMPY_AVAILABLE:
+        raise InversionError("SymPy no está disponible.")
+
+    if from_var not in expr.free_symbols:
+        return expr
+
+    try:
+        eq = sympy.Eq(to_var, expr)
+        sols = sympy.solve(eq, from_var)
+    except Exception as exc:
+        raise InversionError(f"No fue posible resolver {to_var} = {expr} para {from_var}: {exc}") from exc
+
+    if not sols:
+        raise InversionError(f"No se encontraron soluciones analíticas para {to_var} = {expr} respecto a {from_var}.")
+
+    if len(sols) == 1:
+        return sols[0]
+
+    mid_x = (a_num + b_num) / 2.0
+    try:
+        mid_y = float(expr.subs(from_var, mid_x).evalf())
+    except Exception:
+        return sols[0]
+
+    best_sol = None
+    min_dist = float("inf")
+    for sol in sols:
+        try:
+            val = float(sol.subs(to_var, mid_y).evalf())
+            dist = abs(val - mid_x)
+            if dist < min_dist:
+                min_dist = dist
+                best_sol = sol
+        except Exception:
+            continue
+
+    return best_sol if best_sol is not None else sols[0]
+
+
+def invert_region_to_variable(
+    region: Region2D,
+    target_var: str = "y",
+) -> tuple[Region2D, str, str]:
+    """Transforma una región plana acotada invirtiendo la variable independiente (ej. x -> y).
+
+    Returns:
+        tuple[Region2D, str, str]: (nueva_region, explicacion_texto, explicacion_latex)
+    """
+    if region.variable == target_var:
+        return region, "", ""
+
+    f_parsed = _ensure_parsed(region.f_expr)
+    g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
+    num_a, num_b, _, _ = _evaluate_bounds(region.a, region.b)
+
+    from_sym = sympy.Symbol(region.variable)
+    to_sym = sympy.Symbol(target_var)
+
+    f_inv = invert_symbolic_expression(f_parsed.sympy_expr, from_sym, to_sym, num_a, num_b)
+
+    f_a = float(f_parsed.sympy_expr.subs(from_sym, num_a).evalf())
+    f_b = float(f_parsed.sympy_expr.subs(from_sym, num_b).evalf())
+
+    c_num = min(f_a, f_b)
+    d_num = max(f_a, f_b)
+
+    has_g = region.g_expr is not None and g_parsed.sympy_expr != 0
+    if has_g:
+        g_inv = invert_symbolic_expression(g_parsed.sympy_expr, from_sym, to_sym, num_a, num_b)
+        g_a = float(g_parsed.sympy_expr.subs(from_sym, num_a).evalf())
+        g_b = float(g_parsed.sympy_expr.subs(from_sym, num_b).evalf())
+        c_num = min(c_num, g_a, g_b)
+        d_num = max(d_num, g_a, g_b)
+        new_f_expr = str(f_inv)
+        new_g_expr = str(g_inv)
+        expl_text = (
+            f"Despeje analítico: {region.variable} en función de {target_var}.\n"
+            f"Curva 1: {target_var} = {f_parsed.plain_text}  ==>  {region.variable} = {f_inv}\n"
+            f"Curva 2: {target_var} = {g_parsed.plain_text}  ==>  {region.variable} = {g_inv}\n"
+            f"Límites en {target_var}: [{c_num:.4g}, {d_num:.4g}]."
+        )
+        expl_latex = (
+            f"\\text{{Despeje: }} {sympy.latex(from_sym)} = {sympy.latex(f_inv)}"
+            f" \\quad \\text{{y}} \\quad {sympy.latex(from_sym)} = {sympy.latex(g_inv)}"
+        )
+    else:
+        new_f_expr = str(num_b)
+        new_g_expr = str(f_inv)
+        expl_text = (
+            f"Despeje analítico: {region.variable} en función de {target_var}.\n"
+            f"Curva interior/exterior: {region.variable} = {f_inv}\n"
+            f"Frontera lateral: {region.variable} = {num_b}\n"
+            f"Límites en {target_var}: [{c_num:.4g}, {d_num:.4g}]."
+        )
+        expl_latex = (
+            f"\\text{{Despeje: }} {sympy.latex(from_sym)} = {sympy.latex(f_inv)}"
+            f", \\quad \\text{{frontera: }} {sympy.latex(from_sym)} = {num_b}"
+        )
+
+    a_sym = sympy.Rational(f"{c_num:.6f}").limit_denominator(1000) if abs(c_num - round(c_num)) < 1e-6 else c_num
+    b_sym = sympy.Rational(f"{d_num:.6f}").limit_denominator(1000) if abs(d_num - round(d_num)) < 1e-6 else d_num
+
+    new_region = Region2D(
+        f_expr=new_f_expr,
+        g_expr=new_g_expr,
+        a=a_sym,
+        b=b_sym,
+        variable=target_var,
+    )
+    return new_region, expl_text, expl_latex
+
+
+def can_invert_for_method(
+    region: Region2D,
+    axis: RevolutionAxis,
+    method: SolidMethod,
+) -> bool:
+    """Indica si un método incompatible directamente puede aplicarse mediante inversión analítica."""
+    if is_method_compatible(method, axis, region.variable):
+        return True
+    try:
+        target_var = "y" if region.variable == "x" else "x"
+        invert_region_to_variable(region, target_var=target_var)
+        return True
+    except Exception:
+        return False
+
+
 def _evaluate_profile(func: Callable[[float], object], ts: np.ndarray) -> np.ndarray:
     """Evalúa una curva de contorno punto a punto; nan donde no es real o no está definida."""
     out = np.full(ts.size, np.nan)
@@ -1162,8 +1306,14 @@ def calculate_revolution_volume(
     region: Region2D,
     axis: RevolutionAxis | None = None,
     method: SolidMethod | None = None,
+    allow_inversion: bool = True,
 ) -> VolumeResult:
-    """Función de alto nivel para calcular el volumen según el método seleccionado o recomendado."""
+    """Función de alto nivel para calcular el volumen según el método seleccionado o recomendado.
+
+    Si el método solicitado requiere cortes en la otra variable (por ejemplo, Discos/Arandelas
+    en eje vertical o Casquillos en eje horizontal) y allow_inversion es True, invierte analíticamente
+    la región mediante SymPy para resolver la integral en dy.
+    """
     axis = axis or RevolutionAxis.x_axis()
 
     if method is None:
@@ -1175,6 +1325,66 @@ def calculate_revolution_volume(
                 error_message=f"No se pudo determinar un método viable: {'; '.join(rec.limitations_or_warnings)}",
             )
         method = rec.recommended_method
+
+    # Si no es compatible directamente con la variable actual
+    if not is_method_compatible(method, axis, region.variable):
+        if allow_inversion:
+            target_var = "y" if region.variable == "x" else "x"
+            try:
+                inv_region, expl_text, expl_latex = invert_region_to_variable(region, target_var=target_var)
+                sub_method = method
+                res = calculate_revolution_volume(inv_region, axis, method=sub_method, allow_inversion=False)
+                if res.is_success:
+                    inversion_step = SolutionStep(
+                        step_number=1,
+                        title=f"Despeje e inversión analítica de variables (integración en d{target_var})",
+                        explanation=(
+                            f"Para aplicar el método de {method.value} respecto al eje {axis.label}, "
+                            f"los cortes analíticos deben formularse respecto a la variable '{target_var}'. "
+                            f"Despejamos analíticamente con SymPy:\n{expl_text}"
+                        ),
+                        expression_plain_text=expl_text,
+                        expression_latex=expl_latex,
+                    )
+                    new_steps = [inversion_step]
+                    for s in res.steps:
+                        new_steps.append(
+                            SolutionStep(
+                                step_number=len(new_steps) + 1,
+                                title=s.title,
+                                explanation=s.explanation,
+                                expression_plain_text=s.expression_plain_text,
+                                expression_latex=s.expression_latex,
+                            )
+                        )
+                    return VolumeResult(
+                        method=method,
+                        exact_plain_text=res.exact_plain_text,
+                        exact_latex=res.exact_latex,
+                        numeric_value=res.numeric_value,
+                        integrand_plain_text=res.integrand_plain_text,
+                        integrand_latex=res.integrand_latex,
+                        integral_setup_latex=res.integral_setup_latex,
+                        is_success=True,
+                        steps=new_steps,
+                        warnings=res.warnings,
+                    )
+                return res
+            except InversionError as err:
+                return VolumeResult(
+                    method=method,
+                    is_success=False,
+                    error_message=str(err),
+                )
+        else:
+            return VolumeResult(
+                method=method,
+                is_success=False,
+                error_message=(
+                    f"El método {method.value} no es compatible directamente con el eje {axis.label} "
+                    f"para la variable '{region.variable}'."
+                ),
+            )
 
     if method == SolidMethod.DISKS:
         return calculate_disk_volume(region, axis)
