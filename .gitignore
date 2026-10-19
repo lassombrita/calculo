@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Tests y cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Herramientas de tipado y lint
+.mypy_cache/
+.ruff_cache/
+
+# Exportaciones generadas por la app
+*.pdf
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+Desktop.ini

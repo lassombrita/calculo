@@ -1,0 +1,71 @@
+# IntegralLab
+
+Aplicación de escritorio para **cálculo integral simbólico** y **sólidos de revolución**, con una interfaz oscura estilo *glass* y desarrollo paso a paso pensado para estudiar.
+
+## Qué hace
+
+- Introduces `f(x)` (y opcionalmente `g(x)`) y los límites `a` y `b`.
+- Calcula la integral definida de forma simbólica (resultado exacto y aproximado).
+- Dibuja la región 2D sombreada entre las curvas.
+- Genera el **sólido de revolución** en 3D alrededor del eje X, el eje Y o un eje desplazado (`y = k`, `x = h`).
+- Calcula el volumen con **Discos**, **Arandelas** o **Casquillos cilíndricos**, o elige el método por ti en modo *Automático* y explica por qué.
+- Muestra el **desarrollo analítico paso a paso** con fórmulas LaTeX renderizadas y lo exporta a **PDF**.
+
+### Qué método admite cada eje
+
+La región se integra siempre respecto a `x`, así que cada método depende del eje de giro:
+
+| Eje de giro | Discos / Arandelas | Casquillos |
+|---|---|---|
+| Horizontal (`y = 0` o `y = k`) | ✅ | ❌ |
+| Vertical (`x = 0` o `x = h`) | ❌ | ✅ |
+
+Los métodos que no aplican aparecen deshabilitados en el selector, con una explicación al pasar el cursor. Integrar respecto a `y` (invirtiendo las funciones) aún no está soportado.
+
+## Instalación y uso
+
+Requiere Python 3.10 o superior (el proyecto se desarrolla con 3.14).
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # En Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+python -m integrallab
+```
+
+Para ejecutar las pruebas:
+
+```bash
+pytest
+```
+
+## Stack
+
+| Rol | Tecnología |
+|---|---|
+| Interfaz de escritorio | PySide6 (Qt) |
+| Cálculo simbólico | SymPy |
+| Visualización 2D y 3D | Matplotlib (integrado en Qt) |
+| Tests | pytest |
+
+## Estructura
+
+```
+integrallab/
+├── core/    Dominio matemático puro: parser, integrales, muestreo y sólidos de revolución
+├── ui/      Interfaz PySide6: ventana principal, tema glass/dark y widgets
+│   └── widgets/
+└── viz/     Lienzos Matplotlib 2D/3D, estilo y renderizado de LaTeX
+tests/       Pruebas con pytest
+docs/        Estado del proyecto, decisiones técnicas y registro de sesiones
+```
+
+La regla de arquitectura es que la UI nunca habla con SymPy directamente: todo pasa por `integrallab.core`. Detalles en `AGENTS.md` y `docs/TECHNICAL_DECISIONS.md`.
+
+## Estado del proyecto
+
+Ver `docs/PROJECT_STATUS.md` para el detalle por fases.
+
+- ✅ Fases 1–11.1: núcleo matemático, visualización 2D/3D, desarrollo paso a paso, exportación a PDF y rediseño *glass/dark*.
+- ⏳ Fase 12: interpolación numérica (Lagrange, Newton, splines) y empaquetado final.
+- ⏳ Pendiente: conectar el panel de IA (`ChatPanel`), que hoy no tiene backend.
