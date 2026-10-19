@@ -548,3 +548,43 @@
 - [ ] Soporte para integrar respecto a `y` (Discos/Arandelas con eje vertical, Casquillos con eje horizontal).
 - [ ] Fase 12: interpolación numérica.
 
+---
+
+## Sesión — Auditoría técnica integral y corrección autónoma
+
+**Fecha:** 2026-10-19  
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0 · SymPy 1.14.0 · Matplotlib 3.11.2 · NumPy 2.5.4 · pytest 9.1.1
+
+### Diagnóstico inicial
+- `integrallab/core/solids.py`: `SyntaxError` en línea 983 (`(` no cerrada en `cross_warnings`), bloque incompleto de arandelas sin definición de `integrand_core = r_outer**2 - r_inner**2`. Causaba falla de importación de `integrallab.core` y 7 errores de colección en pytest.
+- Variable muerta `warnings_list = list(cross_warnings)` en `calculate_disk_volume`.
+- Desconexión UI: `VolumeResult.warnings` no era leído por `MainWindow._display_volume_report`.
+- Tipo inconsistente: `calculate_shell_volume` pasaba `cross_warnings` (string) a `warnings` (esperaba `list[str]`).
+- Redacción de aviso de cruces: repetía `{var_sym}` dos veces en vez de nombrar `f({var_sym})` y `g({var_sym})`.
+- Documentación desfasada: `PROJECT_STATUS.md` duplicaba secciones con datos de 70 pruebas y Fases 9/10; `AGENTS.md` desactualizado en estructura de archivos.
+
+### Correcciones aplicadas
+1. **`integrallab/core/solids.py`**:
+   - Cerrado el paréntesis de `cross_warnings` en `calculate_washer_volume`.
+   - Definido `integrand_core = r_outer**2 - r_inner**2` para arandelas.
+   - Eliminado código muerto `warnings_list = list(cross_warnings)`.
+   - Corregido paso de `warnings=warnings_from_curves if warnings_from_curves else []` en `calculate_shell_volume`.
+   - Corregido mensaje de cruce para nombrar `f({var_sym})` y `g({var_sym})`.
+2. **`integrallab/ui/main_window.py`**:
+   - Integrada lectura unificada de advertencias: combina `rec.limitations_or_warnings` y `vol_res.warnings` para mostrarlas en la tarjeta HTML de resultados.
+3. **`docs/PROJECT_STATUS.md` & `AGENTS.md`**:
+   - Eliminadas secciones duplicadas en `PROJECT_STATUS.md`, documentado `core/adaptive.py`, actualizados conteos y vinculados `COPYRIGHT.md` y `LICENSE`.
+
+### Verificación matemática
+- Caso 1: $y = x$, $0 \le x \le 1$, eje X $\to \pi/3$ (exacto).
+- Caso 2a: $y = x$, $0 \le x \le 1$, eje Y por Casquillos $\to 2\pi/3$ (exacto).
+- Caso 2b: $x = y$, $0 \le y \le 1$, eje Y por Discos $\to \pi/3$ (exacto).
+- Caso 3: $y = 1$, $0 \le x \le 2$, eje X $\to 2\pi$ (exacto).
+- Caso 4: Región entre $y = 2$ e $y = 1$, $0 \le x \le 1$, eje X $\to 3\pi$ (exacto).
+
+### Pruebas añadidas y resultado
+- 5 nuevas pruebas en `tests/test_solids.py` (los 4 casos de auditoría + detección de cruces).
+- 1 nueva prueba en `tests/test_ui.py` (verificación de advertencia de cruces en tarjeta de resultados).
+- **139 pruebas ejecutadas y 100% aprobadas** (`139 passed in 25.17s`).
+
+

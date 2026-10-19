@@ -372,6 +372,96 @@ def test_disks_on_region_with_hole_falls_back_to_washers() -> None:
     assert math.isclose(res.numeric_value, 3 * math.pi / 10.0, rel_tol=1e-5)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Casos de Referencia Obligatorios de la Auditoría Técnica
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_audit_case_1_line_x_axis_x() -> None:
+    """Caso 1 de Auditoría: y = x, 0 <= x <= 1, girando en eje X -> pi / 3."""
+    region = Region2D(f_expr="x", a=0, b=1, variable="x")
+    res = calculate_revolution_volume(region, RevolutionAxis.x_axis())
+
+    assert res.is_success is True
+    assert res.method == SolidMethod.DISKS
+    assert res.numeric_value is not None
+    assert math.isclose(res.numeric_value, math.pi / 3.0, rel_tol=1e-6)
+    diff = sympy.simplify(sympy.sympify(res.exact_plain_text) - sympy.pi / 3)
+    assert diff == 0
+
+
+def test_audit_case_2a_line_x_axis_y_shells() -> None:
+    """Caso 2a de Auditoría: y = x, 0 <= x <= 1, girando en eje Y con casquillos cilíndricos -> 2*pi / 3."""
+    region = Region2D(f_expr="x", a=0, b=1, variable="x")
+    res = calculate_revolution_volume(region, RevolutionAxis.y_axis(), method=SolidMethod.SHELLS)
+
+    assert res.is_success is True
+    assert res.method == SolidMethod.SHELLS
+    assert res.numeric_value is not None
+    assert math.isclose(res.numeric_value, 2.0 * math.pi / 3.0, rel_tol=1e-6)
+    diff = sympy.simplify(sympy.sympify(res.exact_plain_text) - 2 * sympy.pi / 3)
+    assert diff == 0
+
+
+def test_audit_case_2b_line_y_axis_y_disks() -> None:
+    """Caso 2b de Auditoría: x = y, 0 <= y <= 1, girando en eje Y con discos en variable y -> pi / 3."""
+    region = Region2D(f_expr="y", a=0, b=1, variable="y")
+    res = calculate_revolution_volume(region, RevolutionAxis.y_axis(), method=SolidMethod.DISKS)
+
+    assert res.is_success is True
+    assert res.method == SolidMethod.DISKS
+    assert res.numeric_value is not None
+    assert math.isclose(res.numeric_value, math.pi / 3.0, rel_tol=1e-6)
+    diff = sympy.simplify(sympy.sympify(res.exact_plain_text) - sympy.pi / 3)
+    assert diff == 0
+
+
+def test_audit_case_3_constant_axis_x() -> None:
+    """Caso 3 de Auditoría: y = 1, 0 <= x <= 2, girando en eje X -> 2*pi."""
+    region = Region2D(f_expr="1", a=0, b=2, variable="x")
+    res = calculate_revolution_volume(region, RevolutionAxis.x_axis())
+
+    assert res.is_success is True
+    assert res.method == SolidMethod.DISKS
+    assert res.numeric_value is not None
+    assert math.isclose(res.numeric_value, 2.0 * math.pi, rel_tol=1e-6)
+    diff = sympy.simplify(sympy.sympify(res.exact_plain_text) - 2 * sympy.pi)
+    assert diff == 0
+
+
+def test_audit_case_4_washers_constants_axis_x() -> None:
+    """Caso 4 de Auditoría: Región entre y = 2 e y = 1, 0 <= x <= 1, girando en eje X -> 3*pi."""
+    region = Region2D(f_expr="2", g_expr="1", a=0, b=1, variable="x")
+    res = calculate_revolution_volume(region, RevolutionAxis.x_axis())
+
+    assert res.is_success is True
+    assert res.method == SolidMethod.WASHERS
+    assert res.numeric_value is not None
+    assert math.isclose(res.numeric_value, 3.0 * math.pi, rel_tol=1e-6)
+    diff = sympy.simplify(sympy.sympify(res.exact_plain_text) - 3 * sympy.pi)
+    assert diff == 0
+
+
+def test_curve_crossing_detection_in_washers_and_shells() -> None:
+    """Verifica que las curvas que se cruzan generan advertencias tipo lista en arandelas y casquillos."""
+    # y = x**2 y y = x se cruzan en x = 0 y x = 1. Si integramos en [0, 2], se cruzan adentro.
+    region = Region2D(f_expr="x**2", g_expr="x", a=0, b=2, variable="x")
+    
+    # Arandelas en eje X
+    res_washers = calculate_washer_volume(region, RevolutionAxis.x_axis())
+    assert res_washers.is_success is True
+    assert isinstance(res_washers.warnings, list)
+    assert len(res_washers.warnings) > 0
+    assert any("cruzan" in w for w in res_washers.warnings)
+
+    # Casquillos en eje Y
+    res_shells = calculate_shell_volume(region, RevolutionAxis.y_axis())
+    assert res_shells.is_success is True
+    assert isinstance(res_shells.warnings, list)
+    assert len(res_shells.warnings) > 0
+    assert any("cruzan" in w for w in res_shells.warnings)
+
+
+
 
 
 

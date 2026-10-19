@@ -416,3 +416,18 @@ def test_method_change_without_data_does_not_fail(window: MainWindow) -> None:
     """Cambiar el método con la región vacía no debe lanzar errores ni calcular nada."""
     window.method_combo.setCurrentIndex(2)
     assert window.results_text.toPlainText() == ""
+
+
+def test_plot_displays_curve_crossing_warning_in_results(window: MainWindow) -> None:
+    """Las curvas que se cruzan en el intervalo muestran la advertencia en la tarjeta de resultados."""
+    window.expression_input.setText("x**2")
+    window.g_expression_input.setText("x")
+    window.limit_a_input.setText("0")
+    window.limit_b_input.setText("2")
+    window.axis_combo.setCurrentIndex(0)  # Eje X
+    window.plot_button.click()
+
+    report_html = window.results_text.toHtml()
+    assert "Nota:" in report_html
+    assert "cruzan" in report_html
+
