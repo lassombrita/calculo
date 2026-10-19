@@ -256,7 +256,7 @@ def _order_curves_by_distance(
     axis_val: float,
     num_a: float,
     num_b: float,
-) -> tuple[sympy.Expr, sympy.Expr, bool]:
+) -> tuple[sympy.Expr, sympy.Expr, bool, list[str]]:
     """Ordena dos curvas en R_outer y R_inner según su distancia al eje de rotación.
 
     Returns:
@@ -913,6 +913,7 @@ def calculate_disk_volume(
             ),
             is_success=True,
             steps=steps,
+            warnings=warnings_from_curves if warnings_from_curves else [],
         )
     except Exception as exc:
         return VolumeResult(

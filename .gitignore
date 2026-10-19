@@ -26,3 +26,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# IDE y configuración de entorno (no deben estar en repo)
+.vscode/settings.json

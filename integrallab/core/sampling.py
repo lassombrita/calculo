@@ -15,7 +15,6 @@ try:
     import sympy
     _SYMPY_AVAILABLE = True
 except ImportError:  # pragma: no cover
-    sympy = None  # type: ignore[assignment]
     _SYMPY_AVAILABLE = False
 
 from collections.abc import Sequence
