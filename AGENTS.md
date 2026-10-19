@@ -42,21 +42,21 @@
 ```
 integrallab/                  ← raíz del proyecto
 ├── AGENTS.md                 ← este archivo
+├── COPYRIGHT.md              ← aviso y alcance de derechos de autor
+├── LICENSE                   ← licencia propietaria (All Rights Reserved)
 ├── README.md
-├── pyproject.toml            ← a crear cuando haya código
+├── pyproject.toml            ← configuración de empaquetado y dependencias
 ├── docs/
 │   ├── PROJECT_STATUS.md     ← estado actual (se actualiza cada sesión)
 │   ├── SESSION_LOG.md        ← registro de sesiones (append-only)
 │   └── TECHNICAL_DECISIONS.md← decisiones y por qué
-├── integrallab/              ← paquete Python (a crear cuando haya código)
+├── integrallab/              ← paquete Python
 │   ├── __init__.py
-│   ├── core/                 ← dominio matemático (funciones, derivadas, etc.)
-│   ├── ui/                   ← PySide6 (widgets, ventanas)
-│   └── viz/                  ← Matplotlib (gráficas)
-└── tests/                    ← pytest (a crear cuando haya código)
+│   ├── core/                 ← dominio matemático (funciones, integrales, sólidos, adaptive)
+│   ├── ui/                   ← PySide6 (widgets, ventanas, tema glass/dark)
+│   └── viz/                  ← Matplotlib (canvas 2D/3D, estilo, LaTeX)
+└── tests/                    ← suite de pruebas (132 tests con pytest)
 ```
-
-> Las carpetas `integrallab/` y `tests/` **no se crean hasta que exista código real** (regla 8 de la sección 1).
 
 ## 5. Stack tecnológico
 
@@ -70,14 +70,27 @@ integrallab/                  ← raíz del proyecto
 
 | Fase | Estado actual |
 |---|---|
-| 1. Planificación | ✅ Completada |
-| 2. Base funcional (entorno + estructura) | ✅ Completada |
-| 3. UI básica + visualización 2D | ✅ Completada |
-| 4. Operaciones 2D (límites, sombreado, integral definida) | ✅ Completada |
-| 5. Motor de Sólidos de Revolución (Discos, Arandelas, Casquillos, mallas 3D) | ✅ Completada |
-| 6. Visualización 3D interactiva (canvas3d) | 🔄 Siguiente tarea |
-| 7. UI de Sólidos y exploración | ⏳ Pendiente |
-| 8. Pasos explicados y desarrollo analítico | ⏳ Pendiente |
-| 9. Interpolación, tests y entrega | ⏳ Pendiente |
+| 1–11. Base, UI 2D/3D, Sólidos, LaTeX y Glass/Dark | ✅ Completada (132 tests passing) |
+| 12. Interpolación numérica (Lagrange, Newton, splines) y empaquetado | 🔄 En curso |
 
 Véase `docs/PROJECT_STATUS.md` para el estado detallado.
+
+---
+
+## 7. Derechos de autor y protección de la autoría
+
+El autor declarado de IntegralLab es **Johan Stiven Lasso Aguirre**. El año de referencia del proyecto es **2026**. Todos los agentes de IA deben respetar los avisos de derechos de autor y las condiciones de uso documentadas en [`COPYRIGHT.md`](COPYRIGHT.md) y [`LICENSE`](LICENSE).
+
+### Reglas obligatorias para agentes
+
+1. **No eliminar, reemplazar ni alterar** los avisos de autoría sin autorización expresa del usuario.
+2. **No cambiar el titular declarado** ni atribuir el proyecto a otra persona, herramienta, proveedor o modelo de inteligencia artificial.
+3. **No cambiar la licencia** ni introducir una licencia de software libre sin autorización expresa del usuario.
+4. **No publicar, transferir, redistribuir ni subir** el código a otro repositorio o servicio sin autorización expresa.
+5. **No afirmar que todos los componentes pertenecen al autor.** Identificar y respetar las licencias de terceros.
+6. **No sobrescribir cambios locales ni eliminar archivos** para resolver problemas de permisos o conflictos.
+7. **Antes de modificar `COPYRIGHT.md`, `LICENSE`, los avisos de autoría** o la configuración de privacidad del repositorio, explicar los cambios propuestos y solicitar autorización expresa.
+8. **Asistencia de IA:** Las herramientas de IA pueden utilizarse como apoyo de desarrollo. No se debe afirmar que cada línea fue escrita manualmente por el autor si no se ha verificado esa circunstancia.
+9. Estas reglas no sustituyen las políticas de permisos de cada herramienta ni autorizan a un agente a eludir sus controles.
+10. **No afirmar que el software está registrado ante la DNDA** salvo que exista evidencia verificable de ese registro.
+

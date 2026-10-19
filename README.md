@@ -69,3 +69,14 @@ Ver `docs/PROJECT_STATUS.md` para el detalle por fases.
 - ✅ Fases 1–11.1: núcleo matemático, visualización 2D/3D, desarrollo paso a paso, exportación a PDF y rediseño *glass/dark*.
 - ⏳ Fase 12: interpolación numérica (Lagrange, Newton, splines) y empaquetado final.
 - ⏳ Pendiente: conectar el panel de IA (`ChatPanel`), que hoy no tiene backend.
+
+## Derechos de autor
+
+IntegralLab es un proyecto de software desarrollado por **Johan Stiven Lasso Aguirre**.
+
+**© 2026 Johan Stiven Lasso Aguirre. Todos los derechos reservados.**
+
+El código original y la documentación propia están sujetos a los derechos de autor aplicables. No se autoriza su reutilización, modificación o distribución sin el permiso correspondiente, salvo en los casos permitidos por la legislación aplicable. Los componentes de terceros conservan sus respectivas licencias.
+
+Para consultar el alcance del aviso de autoría y las condiciones de uso, revisa [`COPYRIGHT.md`](COPYRIGHT.md) y [`LICENSE`](LICENSE). Este aviso no equivale a un registro ante la DNDA.
+

@@ -285,7 +285,7 @@ def _order_curves_by_distance(
         
         if abs(val_f_mid - val_g_mid) < 1e-9:
             warnings.append(
-                f"Las curvas {var_sym} y {var_sym} se cruzan o coinciden en el punto medio "
+                f"Las curvas f({var_sym}) y g({var_sym}) se cruzan o coinciden en el punto medio "
                 f"x = {mid_val.evalf():.3f}. El volumen calculado es una aproximación; "
                 f"verifique la región geométrica."
             )
@@ -862,7 +862,7 @@ def calculate_disk_volume(
         cross_warnings = ""
         if warnings_from_curves:
             cross_warnings = (
-                f"\n⚠️  **ADVERTENCIA DE CÁLULO**\n"
+                f"\n⚠️  **ADVERTENCIA DE CÁLCULO**\n"
                 f"Las curvas se cruzan dentro del intervalo [{num_a}, {num_b}]. El volumen calculado "
                 f"asume que una curva es siempre exterior (basado en el punto medio). "
                 f"Esto puede dar un valor incorrecto si el cruce ocurre cerca de los límites."
@@ -897,9 +897,6 @@ def calculate_disk_volume(
             r_inner=r_inner if has_void else None,
         )
 
-        # Construir lista de advertencias
-        warnings_list = list(cross_warnings)
-        
         return VolumeResult(
             method=chosen_method,
             exact_plain_text=str(vol_sym),
@@ -982,7 +979,12 @@ def calculate_washer_volume(
         if warnings_from_curves:
             cross_warnings = (
                 f"\n⚠️  **ADVERTENCIA DE CÁLCULO**\n"
-                f
+                f"Las curvas se cruzan dentro del intervalo [{num_a}, {num_b}]. El volumen calculado "
+                f"asume que una curva es siempre exterior (basado en el punto medio). "
+                f"Esto puede dar un valor incorrecto si el cruce ocurre cerca de los límites."
+            )
+
+        integrand_core = r_outer**2 - r_inner**2
         integrand = sympy.pi * integrand_core
         vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
 
@@ -1018,6 +1020,7 @@ def calculate_washer_volume(
             ),
             is_success=True,
             steps=steps,
+            warnings=warnings_from_curves if warnings_from_curves else [],
         )
     except Exception as exc:
         return VolumeResult(
@@ -1084,6 +1087,26 @@ def calculate_shell_volume(
         val_f = float(f_parsed.sympy_expr.subs(var_sym, mid_val).evalf())
         val_g = float(g_parsed.sympy_expr.subs(var_sym, mid_val).evalf())
 
+        # Capturar advertencias de cruces de curvas
+        _, _, _, warnings_from_curves = _order_curves_by_distance(
+            f_parsed.sympy_expr,
+            g_parsed.sympy_expr,
+            var_sym,
+            axis.position,
+            num_a,
+            num_b,
+        )
+
+        # Construir mensaje de advertencia si hay cruces de curvas
+        cross_warnings = ""
+        if warnings_from_curves:
+            cross_warnings = (
+                f"\n⚠️  **ADVERTENCIA DE CÁLCULO**\n"
+                f"Las curvas se cruzan dentro del intervalo [{num_a}, {num_b}]. El volumen calculado "
+                f"asume que una curva es siempre exterior (basado en el punto medio). "
+                f"Esto puede dar un valor incorrecto si el cruce ocurre cerca de los límites."
+            )
+
         if val_f >= val_g:
             height_expr = f_parsed.sympy_expr - g_parsed.sympy_expr
         else:
@@ -1125,6 +1148,7 @@ def calculate_shell_volume(
             ),
             is_success=True,
             steps=steps,
+            warnings=warnings_from_curves if warnings_from_curves else [],
         )
     except Exception as exc:
         return VolumeResult(

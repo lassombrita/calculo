@@ -677,8 +677,14 @@ class MainWindow(QMainWindow):
             <p style="color: #34495e;">{rec.justification}</p>
         """
 
+        all_warnings: list[str] = []
         if rec.limitations_or_warnings:
-            warning_text = "<br>".join(rec.limitations_or_warnings)
+            all_warnings.extend(rec.limitations_or_warnings)
+        if vol_res.warnings:
+            all_warnings.extend(vol_res.warnings)
+
+        if all_warnings:
+            warning_text = "<br>".join(all_warnings)
             html += f"""
             <p style="color: #d35400; background-color: #fef5e7; padding: 6px; border-left: 3px solid #e67e22;">
                 <b>Nota:</b> {warning_text}
