@@ -55,7 +55,7 @@ integrallab/                  ← raíz del proyecto
 │   ├── core/                 ← dominio matemático (funciones, integrales, sólidos, adaptive)
 │   ├── ui/                   ← PySide6 (widgets, ventanas, tema glass/dark)
 │   └── viz/                  ← Matplotlib (canvas 2D/3D, estilo, LaTeX)
-└── tests/                    ← suite de pruebas (132 tests con pytest)
+└── tests/                    ← suite de pruebas (174 tests con pytest)
 ```
 
 ## 5. Stack tecnológico
@@ -64,14 +64,15 @@ integrallab/                  ← raíz del proyecto
 - **PySide6** — UI gráfica (capa `ui`)
 - **SymPy** — algebra simbólica (capa `core`)
 - **Matplotlib** — visualización (capa `viz`)
+- **Three.js** — visor 3D WebGL (capa `viz`)
 - **pytest** — tests
 
 ## 6. Cómo se avanza por fases
 
 | Fase | Estado actual |
 |---|---|
-| 1–11. Base, UI 2D/3D, Sólidos, LaTeX y Glass/Dark | ✅ Completada (132 tests passing) |
-| 12. Interpolación numérica (Lagrange, Newton, splines) y empaquetado | 🔄 En curso |
+| 1–11. Base, UI 2D/3D, Sólidos, LaTeX y Glass/Dark | ✅ Completada |
+| 12. Interpolación numérica, Three.js y auditoría técnica | ✅ Completada (174 tests passing) |
 
 Véase `docs/PROJECT_STATUS.md` para el estado detallado.
 

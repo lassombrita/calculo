@@ -281,7 +281,16 @@ def interpolate_cubic_spline(
     points: Sequence[DataPoint | tuple[float, float]],
     variable: str = "x",
 ) -> InterpolationResult:
-    """Calcula el Spline Cúbico Natural por tramos garantizando continuidad C^2."""
+    """Calcula el Spline Cúbico Natural por el método tridiagonal estándar.
+
+    Condiciones de borde naturales: S''(x_0) = S''(x_n) = 0.
+
+    El algoritmo resuelve el sistema tridiagonal de n-1 incógnitas (momentos M_i)
+    usando eliminación de Thomas (O(n)) y construye los polinomios cúbicos por
+    tramos en forma de Piecewise de SymPy.
+
+    Válido desde n=2 puntos (spline lineal degenerado).
+    """
     if not _SYMPY_AVAILABLE:
         return InterpolationResult(
             method=InterpolationMethod.CUBIC_SPLINE,
@@ -291,25 +300,132 @@ def interpolate_cubic_spline(
 
     try:
         pts = _normalize_points(points)
+        n = len(pts)
         x_sym = sympy.Symbol(variable)
-        xs = [p.x for p in pts]
-        ys = [p.y for p in pts]
+        xs = [float(p.x) for p in pts]
+        ys = [float(p.y) for p in pts]
 
-        # Utilizar SymPy interpolating_spline de grado 3
-        spline_expr = sympy.interpolating_spline(3, x_sym, xs, ys)
+        if n < 2:
+            raise ValueError("Se requieren al menos 2 puntos para el spline cúbico.")
+
+        # Caso degenerado: 2 puntos → interpolación lineal
+        if n == 2:
+            h = xs[1] - xs[0]
+            slope = (ys[1] - ys[0]) / h
+            spline_expr = sympy.sympify(ys[0]) + sympy.sympify(slope) * (x_sym - xs[0])
+            steps = [
+                SolutionStep(
+                    step_number=1,
+                    title="Caso degenerado: 2 puntos",
+                    explanation="Con solo 2 puntos el spline se reduce a una recta.",
+                    expression_plain_text=str(spline_expr),
+                    expression_latex=sympy.latex(spline_expr),
+                ),
+            ]
+            return InterpolationResult(
+                method=InterpolationMethod.CUBIC_SPLINE,
+                points=pts,
+                polynomial_plain_text=str(spline_expr),
+                polynomial_latex=sympy.latex(spline_expr),
+                sympy_expr=spline_expr,
+                is_success=True,
+                steps=steps,
+            )
+
+        # Pasos del algoritmo tridiagonal
+        # h_i = x_{i+1} - x_i
+        h = [xs[i + 1] - xs[i] for i in range(n - 1)]
+
+        # Sistema tridiagonal de (n-2) ecuaciones para M_1..M_{n-2}
+        # (condiciones naturales: M_0 = M_{n-1} = 0)
+        size = n - 2
+        if size == 0:
+            # n=2 ya manejado arriba; n=3 produce size=1
+            pass
+
+        M = [0.0] * n  # momentos, M[0]=M[n-1]=0
+
+        if size > 0:
+            # Coeficientes de la diagonal principal, sub y super diagonal
+            diag = [2.0 * (h[i] + h[i + 1]) for i in range(size)]
+            upper = [h[i + 1] for i in range(size - 1)]
+            lower = [h[i + 1] for i in range(size - 1)]
+            rhs = [
+                6.0 * ((ys[i + 2] - ys[i + 1]) / h[i + 1] - (ys[i + 1] - ys[i]) / h[i])
+                for i in range(size)
+            ]
+
+            # Eliminación de Thomas (forward sweep)
+            c_prime = [0.0] * size
+            d_prime = [0.0] * size
+            c_prime[0] = upper[0] / diag[0] if size > 1 else 0.0
+            d_prime[0] = rhs[0] / diag[0]
+            for i in range(1, size):
+                denom = diag[i] - lower[i - 1] * c_prime[i - 1]
+                c_prime[i] = upper[i] / denom if i < size - 1 else 0.0
+                d_prime[i] = (rhs[i] - lower[i - 1] * d_prime[i - 1]) / denom
+
+            # Back substitution
+            M[size] = d_prime[size - 1]  # M[n-2]
+            for i in range(size - 2, -1, -1):
+                M[i + 1] = d_prime[i] - c_prime[i] * M[i + 2]
+
+        # Construir los polinomios cúbicos S_i(x) en [x_i, x_{i+1}]
+        pieces = []
+        for i in range(n - 1):
+            xi, xi1 = xs[i], xs[i + 1]
+            yi, yi1 = ys[i], ys[i + 1]
+            Mi, Mi1 = M[i], M[i + 1]
+            hi = h[i]
+            t = x_sym - xi
+            # Forma estándar de los coeficientes del spline
+            a_i = yi
+            b_i = (yi1 - yi) / hi - hi * (2 * Mi + Mi1) / 6.0
+            c_i = Mi / 2.0
+            d_i = (Mi1 - Mi) / (6.0 * hi)
+            poly = (
+                sympy.Float(a_i)
+                + sympy.Float(b_i) * t
+                + sympy.Float(c_i) * t**2
+                + sympy.Float(d_i) * t**3
+            )
+            # Condición de validez del tramo
+            if i < n - 2:
+                cond = sympy.And(x_sym >= xi, x_sym < xi1)
+            else:
+                cond = sympy.And(x_sym >= xi, x_sym <= xi1)
+            pieces.append((poly, cond))
+
+        spline_expr = sympy.Piecewise(*pieces)
 
         steps: list[SolutionStep] = [
             SolutionStep(
                 step_number=1,
                 title="Planteamiento de Splines Cúbicos Naturales",
-                explanation=f"Se formulan {len(pts)-1} polinomios cúbicos S_i(x) con continuidad de función, derivada primera y segunda (S''(x_0) = S''(x_n) = 0).",
-                expression_plain_text=f"Tramos: {len(pts)-1} intervalos entre [{xs[0]}, {xs[-1]}].",
-                expression_latex=f"S''(x_0) = S''(x_{{{len(pts)-1}}}) = 0",
+                explanation=(
+                    f"Se formulan {n - 1} polinomios cúbicos S_i(x) con continuidad C² "
+                    f"y condiciones naturales S''(x_0) = S''(x_{n-1}) = 0. "
+                    f"Se resuelve el sistema tridiagonal de {max(n - 2, 0)} momentos."
+                ),
+                expression_plain_text=f"Intervalos: {n - 1} tramos entre [{xs[0]}, {xs[-1]}].",
+                expression_latex=(
+                    f"S''(x_0) = S''(x_{{{n - 1}}}) = 0, "
+                    f"\\quad n = {n} \\text{{ puntos}}"
+                ),
             ),
             SolutionStep(
                 step_number=2,
-                title="Función Piecewise por tramos",
-                explanation="Polinomios cúbicos resultantes válidos en cada subintervalo.",
+                title="Momentos M_i (sistema tridiagonal)",
+                explanation="Los momentos son las segundas derivadas de S en cada nodo.",
+                expression_plain_text=", ".join(f"M_{i}={M[i]:.6g}" for i in range(n)),
+                expression_latex=", ".join(
+                    f"M_{{{i}}} = {M[i]:.6g}" for i in range(n)
+                ),
+            ),
+            SolutionStep(
+                step_number=3,
+                title="Spline por tramos",
+                explanation="Polinomios cúbicos S_i(x) válidos en cada subintervalo.",
                 expression_plain_text=str(spline_expr),
                 expression_latex=sympy.latex(spline_expr),
             ),

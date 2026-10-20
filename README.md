@@ -68,7 +68,7 @@ La regla de arquitectura es que la UI nunca habla con SymPy directamente: todo p
 Ver `docs/PROJECT_STATUS.md` para el detalle por fases.
 
 - ✅ Fases 1–11.2: núcleo matemático, visualización 2D/3D, desarrollo paso a paso, exportación a PDF y rediseño *glass/dark*.
-- ✅ Fase 12: interpolación numérica (Lagrange, Newton, splines cúbicos), entrada de puntos discretos e inversión analítica a dy (159 pruebas pasando).
+- ✅ Fase 12: interpolación numérica (Lagrange, Newton, splines cúbicos), entrada de puntos discretos, visor 3D Three.js acelerado por WebGL y blindaje de seguridad matemática (174 pruebas pasando al 100%).
 - ⏳ Pendiente: conectar el panel de IA (`ChatPanel`), que hoy no tiene backend.
 
 ## Derechos de autor

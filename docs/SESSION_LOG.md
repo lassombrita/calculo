@@ -646,3 +646,96 @@
    - **163 pruebas aprobadas al 100% en 29.33s** sin regresiones.
 4. **Documentación y Arquitectura**:
    - Actualización de docs/PROJECT_STATUS.md y docs/SESSION_LOG.md.
+
+---
+
+## Sesión — Corrección matemática washer y Three.js dinámico (2026-10-19)
+
+**Fecha:** 2026-10-19
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6
+
+### Hecho
+
+1. **Corrección crítica en `calculate_washer_volume` (`integrallab/core/solids.py`)**:
+   - Implementados helpers `find_curve_crossings()`, `partition_washer_intervals()` y `_build_piecewise_washer_steps()`.
+   - El cuerpo de `calculate_washer_volume` ahora subdivide el intervalo de integración en los puntos donde las curvas se cruzan, asignando R_ext y R_int correctamente en cada subintervalo.
+   - Caso verificado: f=x², g=√x en [0,10] → volumen exacto 99753π/5 ≈ 62676.6584 (error = 0.0 respecto al valor simbólico de SymPy).
+
+2. **Corrección de `_clean_latex` (`integrallab/core/solids.py`)**:
+   - La función ahora acepta `object` (cualquier tipo) además de `str`.
+   - Si recibe un objeto SymPy lo convierte con `sympy.latex()` antes de aplicar las sustituciones de presentación.
+   - Elimina el `TypeError: first argument to replace() must be a type...` al construir los pasos pedagógicos.
+
+3. **Cámara y grilla dinámicas en Three.js (`integrallab/resources/threejs_bundle.html`)**:
+   - Nueva función `updateGrid(maxDim)`: elimina la grilla anterior y crea una proporcional al tamaño del sólido (tamaño = `ceil(maxDim*2.5)`, divisiones entre 10 y 40).
+   - `fitCameraToObject` actualiza `camera.near = maxDim*0.001` y `camera.far = maxDim*200` antes de reposicionar la cámara, evitando clipping en sólidos grandes (p. ej. radio 100).
+
+4. **Tests de regresión (`tests/test_solids.py`)**:
+   - `test_washer_piecewise_crossing_x_squared_and_sqrt`: verifica el caso con cruce en x=1 en [0,10].
+   - `test_washer_no_crossing_single_integral`: verifica f=2, g=1 en [0,3] → 9π (sin cruce, ruta simple).
+   - `test_washer_piecewise_symmetric_parabola`: verifica f=x², g=x en [0,2] → 4π (cruce en x=1).
+
+5. **Resultado de pruebas**: **169 pruebas aprobadas al 100 %** (166 anteriores + 3 nuevas).
+
+6. **Documentación**: `docs/PROJECT_STATUS.md` actualizado con el estado actual y la lista de archivos.
+
+### Estado del repositorio
+
+- Árbol limpio al inicio de la sesión (commit previo con toda la integración Three.js).
+- Sin commits, push ni git reset en esta sesión.
+- Archivos modificados:
+  - `integrallab/core/solids.py` (helpers + `calculate_washer_volume` + `_clean_latex`)
+  - `integrallab/resources/threejs_bundle.html` (grilla y cámara dinámicas)
+  - `tests/test_solids.py` (+3 tests de regresión, append)
+  - `docs/PROJECT_STATUS.md` (actualizado)
+  - `docs/SESSION_LOG.md` (este registro)
+
+---
+
+## Sesión — Implementación integral de soluciones de auditoría técnica (2026-10-19)
+
+**Fecha:** 2026-10-19
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6
+
+### Hecho
+
+1. **Blindaje de seguridad en Parser (C1 - Bloqueante RCE)**:
+   - Implementado sandbox con lista blanca en `_SAFE_GLOBAL_DICT` y `_SAFE_LOCAL_DICT`.
+   - Prohibido el acceso a `__builtins__`, identificadores con doble guion bajo (`__`) y acceso a atributos (`.attr`).
+   - Bloqueo preventivo de palabras clave de ejecución (`import`, `exec`, `eval`, `open`, `compile`, etc.).
+   - Añadida función segura `parse_numeric_or_symbolic()` para límites sin `sympify` ciego.
+   - Test unitario específico `test_parser_blocks_rce_payload` verificando bloqueo de ataques de inyección.
+
+2. **Normalizador de modismos y notación en español es-CO (C6)**:
+   - Soporte nativo para `sen(x)` → `sin(x)`, `tg(x)` → `tan(x)`, `arcsen`, `raiz`.
+   - Soporte para coma decimal `0,5` → `0.5` entre dígitos.
+   - Soporte para superíndices `²` y `³`, símbolo `π` → `pi`, constantes de Euler `e` aisladas → `E`, y barras `|x|` → `Abs(x)`.
+   - Test unitario específico `test_parser_normalizes_spanish_colombian_syntax`.
+
+3. **Corrección de inversión a dy para curvas decrecientes (C2)**:
+   - `invert_region_to_variable()` ahora diferencia funciones crecientes y decrecientes al despejar la región sin curva `g`.
+   - Si $f$ es decreciente ($f_a \ge f_b$), la región va de $x = a$ a $x = f^{-1}(y)$.
+   - Casos del informe resueltos: $4 - x^2$ en $[0, 2]$ con casquillos en eje X ($V = 256\pi/15 \approx 53.62$) y con discos en eje Y ($V = 8\pi \approx 25.13$).
+   - Reemplazado el hack de `.6f` por `sympy.nsimplify()` con tolerancia racional exacta.
+   - Tests de regresión `test_audit_c2_decreasing_curve_shells_on_x_axis` y `test_audit_c2_decreasing_curve_disks_on_y_axis`.
+
+4. **Detección de eje atravesando la región (C4)**:
+   - Nuevo helper `_check_axis_intersects_region()` con muestreo multipunto en todo el intervalo de integración $[a, b]$ en lugar de solo en el punto medio.
+   - Integrado en `recommend_method()` para marcar casos no decidibles por autointersección (ej. $f = x+1, g = x-1, [0, 2]$ con eje X).
+   - Test unitario `test_audit_c4_axis_crossing_region_detected`.
+
+5. **Validación de convergencia y finitud (C5)**:
+   - Límites `nan`, `inf` o no evaluables a reales son rechazados inmediatamente en `_evaluate_bounds()`.
+   - Detección de integrales divergentes (resultado simbólico infinito) en `operations.py` y `solids.py`, retornando `is_success=False` con mensaje explicativo.
+
+6. **Splines cúbicos naturales estándar (C7)**:
+   - Reescribo `interpolate_cubic_spline` con el algoritmo tridiagonal estándar (eliminación de Thomas $O(n)$).
+   - Cumplimiento estricto de las condiciones naturales de frontera: $S''(x_0) = S''(x_{n-1}) = 0$.
+   - Soporte completo y continuo desde $n = 2$ puntos (caso degenerado lineal).
+
+7. **Empaquetado y orden de archivos (autorizado por usuario)**:
+   - `pyproject.toml`: añadida directiva `[tool.setuptools.package-data]` para incluir `resources/**/*` en las distribuciones wheel, y exclusión de tests experimentales.
+   - Movidos los 4 informes `.md` sueltos de la raíz a `docs/archive/`.
+   - Actualizados conteos en `README.md` y `AGENTS.md`.
+
+8. **Suite de pruebas**: **174 pruebas aprobadas al 100 %** (0 fallos, 0 errores en 23 s).

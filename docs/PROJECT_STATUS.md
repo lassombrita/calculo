@@ -1,15 +1,16 @@
 # Estado del proyecto — IntegralLab
 
 > Este archivo se actualiza **al terminar cada sesión** de trabajo.
-> Última actualización: **Auditoría técnica integral y corrección completadas (2026-10-19)** — Corrección de sintaxis en arandelas (`core/solids.py`), integración de advertencias de cruces de curvas en UI (`ui/main_window.py`), verificación de los 4 casos matemáticos de auditoría y suite completa con 139 tests pasando al 100%.
+> Última actualización: **2026-10-19** — Implementación completa de soluciones de auditoría técnica: blindaje RCE en parser con lista blanca y sandbox, normalizador es-CO (sen, tg, 0,5, x², π, √, Abs, E), corrección de inversión en dy para curvas decrecientes (4-x²), detección robusta de eje cortando la región (C4), validación de convergencia y finitud, algoritmo tridiagonal O(n) para splines cúbicos naturales, empaquetado de resources en pyproject.toml y archivo de reportes sueltos en docs/archive/. **174 pruebas pasando al 100 %.**
 
-> **Fases 1–11.2 completadas**: Selector de método, muestreo adaptativo 2D (`core/adaptive.py`), lienzo 3D a escala real, exportación PDF, diseño *glass/dark*, avisos de derechos de autor (`COPYRIGHT.md` y `LICENSE`) y suite de pruebas integral.
+> **Fases 1–12 completadas**: Selector de método, muestreo adaptativo, lienzo 3D a escala real, exportación PDF, diseño *glass/dark*, interpolación numérica (Lagrange/Newton/Splines naturales), Three.js WebGL offline, arandelas por tramos y blindaje de seguridad matemática.
 
 
 ## Fase actual
 
 ✅ **Fase 11: Refinamiento pedagógico, corrección LaTeX y motor 3D interactivo** — Completada
-✅ **Fase 12: Interpolación numérica y despeje analítico en dy** — Completada (166 tests passing)
+✅ **Fase 12: Interpolación numérica, despeje analítico en dy y Three.js** — Completada
+✅ **Auditoría técnica y seguridad matemática implementadas** — Completada (174 tests passing)
 
 ## Estado por fases
 
@@ -76,27 +77,31 @@ Verificado en disco:
     - ✅ `integrallab/ui/theme.py` — tokens de diseño, QSS y paleta Qt oscura
     - ✅ `integrallab/ui/widgets/` — `glass.py` (GlassCard), `aurora.py` (fondo), `ai_pulse.py` y `chat_panel.py` (futuro panel de IA, sin conectar)
     - ✅ `integrallab/ui/main_window.py` — MainWindow con exportación PDF (`export_to_pdf`, `_export_to_pdf_path`)
-- ✅ `tests/` — **166 pruebas pasando al 100%**
+- ✅ `tests/` — **174 pruebas pasando al 100 %**
   - ✅ `tests/test_smoke.py` (3 tests)
-  - ✅ `tests/test_parser.py` (4 tests)
+  - ✅ `tests/test_parser.py` (6 tests)  ← +2 pruebas de seguridad RCE y es-CO
   - ✅ `tests/test_operations.py` (4 tests)
   - ✅ `tests/test_sampling.py` (8 tests)
   - ✅ `tests/test_adaptive.py` (26 tests)
   - ✅ `tests/test_interpolation.py` (14 tests)
   - ✅ `tests/test_canvas.py` (7 tests)
   - ✅ `tests/test_canvas3d.py` (11 tests)
+  - ✅ `tests/test_threejs.py` (6 tests)
   - ✅ `tests/test_latex_render.py` (6 tests)
-  - ✅ `tests/test_solids.py` (32 tests)
+  - ✅ `tests/test_solids.py` (38 tests)  ← +3 tramos washer + 2 inversión C2 + 1 detección eje C4
   - ✅ `tests/test_theme.py` (5 tests)
   - ✅ `tests/test_canvas_premium.py` (5 tests)
   - ✅ `tests/test_ui.py` (35 tests)
 
 ## Siguiente tarea atómica
 
-- [x] **Fase 12: Interpolación numérica y despeje analítico en dy** (Completada):
-  - [x] Despeje analítico de variables con SymPy (`invert_region_to_variable`, `can_invert_for_method`).
-  - [x] Módulo `integrallab/core/interpolation.py` con Lagrange, Newton (diferencias divididas) y Splines Cúbicos naturales.
-  - [x] Adaptación de `parser.py` para admitir puntos discretos `(x, y)` en múltiples formatos.
-  - [x] Conexión fluida con la UI (auto-completado de límites, trazado y sólidos a partir de datos discretos).
-  - [x] 159 tests pasando al 100%.
-
+- [x] **Fase 12 y Soluciones de Auditoría completadas** — 174 tests al 100%.
+  - [x] Parser seguro (C1): sandbox con lista blanca estricta, bloqueo de dunders, atributos y RCE.
+  - [x] Normalizador es-CO (C6): soporte nativo de sen, tg, 0,5, x², π, √, Abs, E.
+  - [x] Inversión a dy para curvas decrecientes (C2): 4-x² discos en eje Y = 25.13, casquillos en eje X = 53.62.
+  - [x] Detección robusta de eje cortando la región (C4): muestreo multipunto en recommend_method.
+  - [x] Validación de convergencia y finitud (C5): detección de integrales divergentes y límites no finitos.
+  - [x] Splines cúbicos naturales estándar (C7): algoritmo tridiagonal O(n) con condiciones de frontera natural.
+  - [x] Empaquetado `resources/` en `pyproject.toml` y archivado de reportes en `docs/archive/`.
+- [ ] **Fase 13 (propuesta):** Superficie de área de revolución o exportación de informes HTML interactivos.
+- [ ] **Fase 13 (propuesta):** Superficie de área de revolución, o exportación de informes HTML interactivos.

@@ -528,3 +528,114 @@ def test_calculate_revolution_volume_with_inversion_washers_on_y_axis() -> None:
     assert res.numeric_value is not None
     assert math.isclose(res.numeric_value, 3.0 * math.pi / 10.0, rel_tol=1e-5)
     assert any("inversión" in s.title.lower() or "despeje" in s.title.lower() for s in res.steps)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regresión: Arandelas por tramos (cruces de curvas)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_washer_piecewise_crossing_x_squared_and_sqrt() -> None:
+    """f=x², g=√x en [0,10]: las curvas se cruzan en x=1.
+
+    Volumen exacto por tramos:
+      [0,1]:  R_ext=√x, R_int=x²  → π·3/10
+      [1,10]: R_ext=x², R_int=√x  → π·199503/10
+    Total: 99753π/5 ≈ 62676.6584
+    """
+    region = Region2D(f_expr="x^2", g_expr="sqrt(x)", a=0, b=10)
+    res = calculate_washer_volume(region, RevolutionAxis.x_axis())
+
+    assert res.is_success is True
+    assert res.numeric_value is not None
+
+    expected = float((sympy.Integer(99753) * sympy.pi / 5).evalf())
+    assert math.isclose(res.numeric_value, expected, rel_tol=1e-9), (
+        f"Esperado {expected:.6f}, obtenido {res.numeric_value:.6f}"
+    )
+
+    # Debe reportar al menos una advertencia de cruce detectado
+    assert len(res.warnings) >= 1, "Se esperaba advertencia de cruce de curvas"
+
+    # El desarrollo pedagógico debe tener pasos (al menos el planteamiento)
+    assert len(res.steps) >= 1
+
+
+def test_washer_no_crossing_single_integral() -> None:
+    """f=2, g=1 en [0,3]: sin cruce → volumen = 9π."""
+    region = Region2D(f_expr="2", g_expr="1", a=0, b=3)
+    res = calculate_washer_volume(region, RevolutionAxis.x_axis())
+
+    assert res.is_success is True
+    assert res.numeric_value is not None
+    assert math.isclose(res.numeric_value, 9.0 * math.pi, rel_tol=1e-9), (
+        f"Esperado {9*math.pi:.6f}, obtenido {res.numeric_value:.6f}"
+    )
+
+
+def test_washer_piecewise_symmetric_parabola() -> None:
+    """f=x², g=x en [0,2]: cruzan en x=1.
+
+    [0,1]: R_ext=x, R_int=x²  → π·(1/3 - 1/5) = 2π/15
+    [1,2]: R_ext=x², R_int=x  → π·(31/5 - 7/3) = π·(93/15 - 35/15) = 58π/15
+    Total: 60π/15 = 4π ≈ 12.56637
+    """
+    region = Region2D(f_expr="x^2", g_expr="x", a=0, b=2)
+    res = calculate_washer_volume(region, RevolutionAxis.x_axis())
+
+    assert res.is_success is True
+    assert res.numeric_value is not None
+    expected = float((4 * sympy.pi).evalf())
+    assert math.isclose(res.numeric_value, expected, rel_tol=1e-9), (
+        f"Esperado {expected:.6f}, obtenido {res.numeric_value:.6f}"
+    )
+    assert len(res.warnings) >= 1
+
+
+def test_audit_c2_decreasing_curve_shells_on_x_axis() -> None:
+    """f(x) = 4 - x^2 en [0, 2], rotación en eje X con Casquillos (invierte a dy).
+
+    Volumen esperado analítico: 256*pi / 15 ≈ 53.6165.
+    """
+    region = Region2D(f_expr="4 - x^2", a=0, b=2, variable="x")
+    res = calculate_revolution_volume(
+        region,
+        RevolutionAxis.x_axis(),
+        method=SolidMethod.SHELLS,
+        allow_inversion=True,
+    )
+    assert res.is_success is True
+    assert res.numeric_value is not None
+    expected = 256.0 * math.pi / 15.0
+    assert math.isclose(res.numeric_value, expected, rel_tol=1e-4)
+
+
+def test_audit_c2_decreasing_curve_disks_on_y_axis() -> None:
+    """f(x) = 4 - x^2 en [0, 2], rotación en eje Y con Discos (invierte a dy).
+
+    Volumen esperado analítico: 8*pi ≈ 25.1327.
+    """
+    region = Region2D(f_expr="4 - x^2", a=0, b=2, variable="x")
+    res = calculate_revolution_volume(
+        region,
+        RevolutionAxis.y_axis(),
+        method=SolidMethod.DISKS,
+        allow_inversion=True,
+    )
+    assert res.is_success is True
+    assert res.numeric_value is not None
+    expected = 8.0 * math.pi
+    assert math.isclose(res.numeric_value, expected, rel_tol=1e-4)
+
+
+def test_audit_c4_axis_crossing_region_detected() -> None:
+    """f(x) = x+1, g(x) = x-1 en [0, 2], eje X (y = 0).
+
+    El eje y=0 corta el interior de la región (entre -1 y 1 en x=0).
+    recommend_method debe declarar el caso no decidible por autointersección.
+    """
+    region = Region2D(f_expr="x + 1", g_expr="x - 1", a=0, b=2)
+    rec = recommend_method(region, RevolutionAxis.x_axis())
+    assert rec.is_decidable is False
+    assert len(rec.limitations_or_warnings) > 0
+    assert "atraviesa el interior" in rec.limitations_or_warnings[0]

@@ -32,3 +32,54 @@ def test_parse_invalid_syntax_raises_error() -> None:
     with pytest.raises(ExpressionParseError, match="Error de sintaxis"):
         parse_math_expression("x +++ * 3")
 
+
+
+def test_parser_blocks_rce_payload() -> None:
+    """Verifica que intentos de inyección de código sean rechazados (C1 audit)."""
+    attacks = [
+        "__import__('os').system('touch /tmp/x')",
+        "__builtins__",
+        "open('/etc/passwd')",
+        "eval('1+1')",
+        "exec('import os')",
+        "x.system('ls')",
+        "(lambda x: x)(1)",
+    ]
+    for attack in attacks:
+        with pytest.raises(ExpressionParseError):
+            parse_math_expression(attack)
+
+
+def test_parser_normalizes_spanish_colombian_syntax() -> None:
+    """Verifica el normalizador de modismos y notación en español (C6 audit)."""
+    # sen(x) -> sin(x)
+    expr_sen = parse_math_expression("sen(x)")
+    assert "sin(x)" in expr_sen.plain_text
+
+    # tg(x) -> tan(x)
+    expr_tg = parse_math_expression("tg(x)")
+    assert "tan(x)" in expr_tg.plain_text
+
+    # Coma decimal 0,5*x -> 0.5*x
+    expr_coma = parse_math_expression("0,5*x")
+    assert "0.5*x" in expr_coma.plain_text or "x/2" in expr_coma.plain_text
+
+    # Superíndice x²
+    expr_sup = parse_math_expression("x² + 1")
+    assert "x**2" in expr_sup.plain_text
+
+    # Símbolo pi π
+    expr_pi = parse_math_expression("π*x")
+    assert "pi*x" in expr_pi.plain_text
+
+    # Raíz cuadrada √
+    expr_raiz = parse_math_expression("√x")
+    assert "sqrt(x)" in expr_raiz.plain_text
+
+    # Barras de valor absoluto |x|
+    expr_abs = parse_math_expression("|x - 3|")
+    assert "Abs(x - 3)" in expr_abs.plain_text
+
+    # Constante de Euler e^(2x)
+    expr_e = parse_math_expression("e^(2x)")
+    assert "exp(2*x)" in expr_e.plain_text or "E**(2*x)" in expr_e.plain_text

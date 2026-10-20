@@ -221,14 +221,41 @@ def _evaluate_bounds(
     a_in: float | int | str,
     b_in: float | int | str,
 ) -> tuple[float, float, sympy.Expr, sympy.Expr]:
-    """Evalúa los límites de integración a valores numéricos (float) y simbólicos (SymPy)."""
-    sym_a = sympy.sympify(a_in)
-    sym_b = sympy.sympify(b_in)
+    """Evalúa los límites de integración a valores numéricos (float) y simbólicos (SymPy).
+
+    Raises:
+        ValueError: Si los límites son nan, inf o si a >= b.
+    """
+    import math as _math
+    from integrallab.core.parser import _SAFE_LOCAL_DICT, _get_transformations
+    from sympy.parsing.sympy_parser import parse_expr as _parse_expr
+
+    def _safe_sympify(v: object) -> sympy.Expr:
+        if isinstance(v, sympy.Basic):
+            return v  # type: ignore[return-value]
+        v_str = str(v).strip()
+        try:
+            return _parse_expr(
+                v_str,
+                transformations=_get_transformations(),
+                global_dict={"__builtins__": {}},
+                local_dict=_SAFE_LOCAL_DICT,
+            )
+        except Exception:
+            return sympy.sympify(v_str)
+
+    sym_a = _safe_sympify(a_in)
+    sym_b = _safe_sympify(b_in)
     try:
         num_a = float(sym_a.evalf())
         num_b = float(sym_b.evalf())
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Los límites [{a_in}, {b_in}] no se pueden evaluar a números reales: {exc}") from exc
+
+    if not (_math.isfinite(num_a) and _math.isfinite(num_b)):
+        raise ValueError(
+            f"Los límites de integración deben ser finitos. Obtenido: [{num_a}, {num_b}]."
+        )
 
     if num_a >= num_b:
         raise ValueError(f"El límite inferior 'a' ({num_a}) debe ser estrictamente menor que 'b' ({num_b}).")
@@ -338,21 +365,54 @@ def invert_region_to_variable(
             f" \\quad \\text{{y}} \\quad {sympy.latex(from_sym)} = {sympy.latex(g_inv)}"
         )
     else:
-        new_f_expr = str(num_b)
-        new_g_expr = str(f_inv)
+        # Rama sin curva g: la región bajo f(x) en [a,b].
+        # Al integrar en dy la región queda entre x=0 (eje) y x=f_inv(y).
+        # Verificar monotonía para dar un mensaje claro si falla.
+        try:
+            f_deriv = sympy.diff(f_parsed.sympy_expr, from_sym)
+            test_pts = [num_a + (num_b - num_a) * t for t in (0.1, 0.3, 0.5, 0.7, 0.9)]
+            signs = []
+            for tp in test_pts:
+                try:
+                    dv = float(f_deriv.subs(from_sym, tp).evalf())
+                    signs.append(dv)
+                except Exception:
+                    pass
+            if signs and not (all(v >= 0 for v in signs) or all(v <= 0 for v in signs)):
+                raise InversionError(
+                    f"La función {f_parsed.plain_text} no es monótona en [{num_a:.4g}, {num_b:.4g}]. "
+                    "La inversión a dy no es posible de forma directa. "
+                    "Usa el método de Casquillos (shells) en su lugar."
+                )
+        except InversionError:
+            raise
+        except Exception:
+            pass  # No bloquear si la derivada falla; continuar con la inversión
+
+        new_f_expr = str(f_inv)
+        new_g_expr = "0"
         expl_text = (
             f"Despeje analítico: {region.variable} en función de {target_var}.\n"
-            f"Curva interior/exterior: {region.variable} = {f_inv}\n"
-            f"Frontera lateral: {region.variable} = {num_b}\n"
+            f"Curva: {target_var} = {f_parsed.plain_text}  ==>  {region.variable} = {f_inv}\n"
+            f"La región queda entre {region.variable} = 0 (eje) y {region.variable} = {f_inv}.\n"
             f"Límites en {target_var}: [{c_num:.4g}, {d_num:.4g}]."
         )
         expl_latex = (
             f"\\text{{Despeje: }} {sympy.latex(from_sym)} = {sympy.latex(f_inv)}"
-            f", \\quad \\text{{frontera: }} {sympy.latex(from_sym)} = {num_b}"
+            f", \\quad \\text{{región: }} 0 \\le {sympy.latex(from_sym)} \\le {sympy.latex(f_inv)}"
         )
 
-    a_sym = sympy.Rational(f"{c_num:.6f}").limit_denominator(1000) if abs(c_num - round(c_num)) < 1e-6 else c_num
-    b_sym = sympy.Rational(f"{d_num:.6f}").limit_denominator(1000) if abs(d_num - round(d_num)) < 1e-6 else d_num
+    def _to_exact(v: float) -> sympy.Expr:
+        """Convierte un float a Rational exacto cuando sea posible, sin el hack :.6f."""
+        try:
+            # nsimplify busca la fracción exacta más cercana al float
+            exact = sympy.nsimplify(v, rational=True, tolerance=1e-9)
+            return exact
+        except Exception:
+            return sympy.Float(v)
+
+    a_sym = _to_exact(c_num)
+    b_sym = _to_exact(d_num)
 
     new_region = Region2D(
         f_expr=new_f_expr,
@@ -651,27 +711,32 @@ def _detect_integration_technique(
     return title, explanation, latex
 
 
-def _clean_latex(s: str) -> str:
-    """Elimina notación de valor absoluto de cadenas LaTeX generadas por SymPy.
+def _clean_latex(s: object) -> str:
+    """Convierte una expresion SymPy o cadena LaTeX a string LaTeX limpio.
 
-    SymPy genera \\left|...\\right| cuando no puede determinar el signo de una
-    expresión. Esta función los convierte en paréntesis ordinarios para una
-    presentación pedagógica más limpia.
+    Acepta tanto str como objetos SymPy. Cuando recibe un objeto
+    SymPy lo convierte con sympy.latex() antes de aplicar las
+    transformaciones de presentacion.
 
     Args:
-        s: Cadena LaTeX potencialmente con notación de valor absoluto.
+        s: Cadena LaTeX o expresion SymPy.
 
     Returns:
-        Cadena LaTeX con los valores absolutos convertidos a paréntesis.
+        Cadena LaTeX lista para presentacion pedagogica.
     """
-    import re
-    # \\left|...\\right| → \\left(...\\right)
-    s = s.replace(r'\left|', r'\left(').replace(r'\right|', r'\right)')
-    # \\operatorname{Abs}\\left(...\\right) → \\left(...\\right)
-    s = re.sub(r'\\operatorname\{Abs\}\\left\(', r'\\left(', s)
-    # Abs(expr) simple sin \\left
-    s = re.sub(r'\\text\{Abs\}\(', r'(', s)
-    return s
+    import re as _re
+    import sympy as _sp
+    if not isinstance(s, str):
+        try:
+            s_str: str = _sp.latex(s)
+        except Exception:
+            s_str = str(s)
+    else:
+        s_str = s
+    s_str = s_str.replace(r'\left|', r'\left(').replace(r'\right|', r'\right)')
+    s_str = _re.sub(r'\\operatorname\{Abs\}\\left\(', r'\\left(', s_str)
+    s_str = _re.sub(r'\\text\{Abs\}\(', r'(', s_str)
+    return s_str
 
 
 def _build_volume_steps(
@@ -1012,11 +1077,16 @@ def calculate_disk_volume(
                 f"Esto puede dar un valor incorrecto si el cruce ocurre cerca de los límites."
             )
 
+        def _sq(e: sympy.Expr) -> sympy.Expr:
+            if isinstance(e, sympy.Abs):
+                return e.args[0]**2
+            return e**2
+
         if has_void:
-            integrand_core = r_outer**2 - r_inner**2
+            integrand_core = _sq(r_outer) - _sq(r_inner)
             chosen_method = SolidMethod.WASHERS
         else:
-            integrand_core = r_outer**2
+            integrand_core = _sq(r_outer)
             chosen_method = SolidMethod.DISKS
 
         integrand = sympy.pi * integrand_core
@@ -1026,6 +1096,18 @@ def calculate_disk_volume(
             num_val = float(vol_sym.evalf())
         except (TypeError, ValueError):
             num_val = None
+
+        # Detectar resultado no finito (integral divergente o dominio imaginario)
+        import math as _math
+        if num_val is not None and not _math.isfinite(num_val):
+            return VolumeResult(
+                method=chosen_method,
+                is_success=False,
+                error_message=(
+                    "La integral del volumen no converge (resultado no finito). "
+                    "Verifique que la función esté definida y sea real en todo el intervalo."
+                ),
+            )
 
         steps = _build_volume_steps(
             method=chosen_method,
@@ -1062,6 +1144,218 @@ def calculate_disk_volume(
             is_success=False,
             error_message=str(exc),
         )
+
+
+
+def find_curve_crossings(
+    f_sym: sympy.Expr,
+    g_sym: sympy.Expr,
+    var_sym: sympy.Symbol,
+    axis_val: float,
+    num_a: float,
+    num_b: float,
+    method: SolidMethod = SolidMethod.WASHERS,
+) -> list[tuple[float, sympy.Expr]]:
+    """Encuentra las intersecciones reales estrictamente interiores en (num_a, num_b)."""
+    candidates = []
+    # 1. f(t) = g(t)
+    try:
+        sols1 = sympy.solve(sympy.Eq(f_sym, g_sym), var_sym)
+        if isinstance(sols1, (list, tuple, set)):
+            for s in sols1:
+                candidates.append(sympy.sympify(s))
+        elif sols1 is not None:
+            candidates.append(sympy.sympify(sols1))
+    except Exception:
+        pass
+
+    # 2. f(t) + g(t) = 2*axis (arandelas con eje != 0)
+    if method == SolidMethod.WASHERS and axis_val != 0:
+        axis_sym = sympy.nsimplify(axis_val)
+        try:
+            sols2 = sympy.solve(sympy.Eq(f_sym + g_sym, 2 * axis_sym), var_sym)
+            if isinstance(sols2, (list, tuple, set)):
+                for s in sols2:
+                    candidates.append(sympy.sympify(s))
+            elif sols2 is not None:
+                candidates.append(sympy.sympify(sols2))
+        except Exception:
+            pass
+
+    eps = 1e-6
+    crossings: list[tuple[float, sympy.Expr]] = []
+    for c in candidates:
+        try:
+            c_val = complex(c.evalf())
+            if abs(c_val.imag) < 1e-9:
+                val = float(c_val.real)
+                if num_a + eps < val < num_b - eps:
+                    if not any(abs(val - existing[0]) < 1e-5 for existing in crossings):
+                        c_simp = sympy.nsimplify(val) if abs(val - round(val)) < 1e-6 else c
+                        crossings.append((val, c_simp))
+        except Exception:
+            pass
+
+    crossings.sort(key=lambda item: item[0])
+    return crossings
+
+
+def partition_washer_intervals(
+    f_sym: sympy.Expr,
+    g_sym: sympy.Expr,
+    var_sym: sympy.Symbol,
+    axis_val: float,
+    num_a: float,
+    num_b: float,
+    sym_a: sympy.Expr,
+    sym_b: sympy.Expr,
+) -> list[dict[str, Any]]:
+    """Subdivide el intervalo [a, b] en subintervalos con orden R_ext >= R_int uniforme."""
+    crossings = find_curve_crossings(
+        f_sym, g_sym, var_sym, axis_val, num_a, num_b, method=SolidMethod.WASHERS
+    )
+    bounds = [(num_a, sym_a)] + crossings + [(num_b, sym_b)]
+    axis_sym = sympy.nsimplify(axis_val)
+    dist_f = sympy.Abs(f_sym - axis_sym)
+    dist_g = sympy.Abs(g_sym - axis_sym)
+
+    intervals = []
+    for i in range(len(bounds) - 1):
+        t0_num, t0_sym = bounds[i]
+        t1_num, t1_sym = bounds[i + 1]
+        mid = (t0_num + t1_num) / 2.0
+        try:
+            df = float(dist_f.subs(var_sym, mid).evalf())
+            dg = float(dist_g.subs(var_sym, mid).evalf())
+        except Exception:
+            df, dg = 1.0, 0.0
+
+        if df >= dg:
+            r_out = dist_f
+            r_in = dist_g
+            core = (f_sym - axis_sym)**2 - (g_sym - axis_sym)**2
+            f_is_outer = True
+        else:
+            r_out = dist_g
+            r_in = dist_f
+            core = (g_sym - axis_sym)**2 - (f_sym - axis_sym)**2
+            f_is_outer = False
+
+        intervals.append({
+            "t0_num": t0_num,
+            "t1_num": t1_num,
+            "t0_sym": t0_sym,
+            "t1_sym": t1_sym,
+            "r_outer": r_out,
+            "r_inner": r_in,
+            "core": core,
+            "f_is_outer": f_is_outer,
+        })
+    return intervals
+
+
+def _build_piecewise_washer_steps(
+    region: Region2D,
+    axis: RevolutionAxis,
+    var_sym: sympy.Symbol,
+    intervals: list[dict[str, Any]],
+    vol_partials: list[sympy.Expr],
+    vol_sym: sympy.Expr,
+    num_val: float | None,
+) -> list[SolutionStep]:
+    """Genera el desarrollo pedagógico por tramos cuando las curvas se cruzan."""
+    var = region.variable
+    cl = _clean_latex
+    steps: list[SolutionStep] = []
+
+    # Paso 1: Puntos de corte
+    cross_points = [it["t1_sym"] for it in intervals[:-1]]
+    cross_str = ", ".join(f"{var} = {p}" for p in cross_points)
+    steps.append(
+        SolutionStep(
+            step_number=1,
+            title="1. Detección de intersecciones y división por tramos",
+            explanation=(
+                f"Las curvas frontera se intersecan en {cross_str} dentro del intervalo "
+                f"[{region.a}, {region.b}]. Para calcular el volumen geométrico sin que "
+                f"las regiones se resten incorrectamente, dividimos el dominio en "
+                f"{len(intervals)} subintervalos."
+            ),
+            expression_plain_text=f"Intersecciones: {cross_str}",
+            expression_latex=cl(rf"\text{{Cortes en: }} {', '.join(sympy.latex(p) for p in cross_points)}"),
+        )
+    )
+
+    # Paso 2: Radios por tramo
+    explanations = []
+    latex_parts = []
+    for idx, it in enumerate(intervals):
+        explanations.append(
+            f"En [{it['t0_sym']}, {it['t1_sym']}]: R_ext({var}) = {it['r_outer']}, R_int({var}) = {it['r_inner']}"
+        )
+        latex_parts.append(
+            rf"I_{{{idx+1}}} = [{cl(it['t0_sym'])}, {cl(it['t1_sym'])}]: "
+            rf"R_{{ext}} = {cl(it['r_outer'])},\; r_{{int}} = {cl(it['r_inner'])}"
+        )
+
+    steps.append(
+        SolutionStep(
+            step_number=2,
+            title="2. Radios exterior e interior en cada subintervalo",
+            explanation="; ".join(explanations),
+            expression_plain_text="; ".join(explanations),
+            expression_latex=cl(r" \quad ".join(latex_parts)),
+        )
+    )
+
+    # Paso 3: Planteamiento por tramos
+    setup_latex_list = [
+        rf"\pi \int_{{{cl(it['t0_sym'])}}}^{{{cl(it['t1_sym'])}}} \left( {cl(it['core'])} \right) d{var}"
+        for it in intervals
+    ]
+    steps.append(
+        SolutionStep(
+            step_number=3,
+            title="3. Planteamiento de la integral de volumen por tramos",
+            explanation=(
+                "El volumen total es la suma de los volúmenes de revolución de cada subintervalo: "
+                "V = V₁ + V₂ + ..."
+            ),
+            expression_plain_text=" + ".join(f"V_{i+1}" for i in range(len(intervals))),
+            expression_latex=cl(r"V = " + " + ".join(setup_latex_list)),
+        )
+    )
+
+    # Paso 4: Evaluación de cada tramo
+    eval_texts = []
+    eval_latex = []
+    for idx, (it, vp) in enumerate(zip(intervals, vol_partials)):
+        eval_texts.append(f"V_{idx+1} = {vp}")
+        eval_latex.append(rf"V_{{{idx+1}}} = {cl(vp)}")
+
+    steps.append(
+        SolutionStep(
+            step_number=4,
+            title="4. Cálculo de cada integral definida",
+            explanation="Integramos y evaluamos en los límites correspondientes de cada subintervalo.",
+            expression_plain_text="; ".join(eval_texts),
+            expression_latex=cl(r" \quad ".join(eval_latex)),
+        )
+    )
+
+    # Paso 5: Suma y resultado final
+    approx_text = f" ≈ {num_val:.5f} u³" if num_val is not None else ""
+    steps.append(
+        SolutionStep(
+            step_number=5,
+            title="5. Volumen total final (suma de tramos)",
+            explanation="Sumamos el volumen aportado por cada tramo para obtener el volumen geométrico total exacto.",
+            expression_plain_text=f"V = {' + '.join(str(vp) for vp in vol_partials)} = {vol_sym}{approx_text}",
+            expression_latex=cl(rf"V = {' + '.join(sympy.latex(vp) for vp in vol_partials)} = {sympy.latex(vol_sym)}"),
+        )
+    )
+
+    return steps
 
 
 def calculate_washer_volume(
@@ -1109,63 +1403,107 @@ def calculate_washer_volume(
                 ),
             )
 
-        r_outer, r_inner, _, warnings_from_curves = _order_curves_by_distance(
+        intervals = partition_washer_intervals(
             f_parsed.sympy_expr,
             g_parsed.sympy_expr,
             var_sym,
             axis.position,
             num_a,
             num_b,
+            sym_a,
+            sym_b,
         )
+        has_crossings = len(intervals) > 1
 
-        # Construir mensaje de advertencia si hay cruces de curvas
-        cross_warnings = ""
-        if warnings_from_curves:
-            cross_warnings = (
-                f"\n⚠️  **ADVERTENCIA DE CÁLCULO**\n"
-                f"Las curvas se cruzan dentro del intervalo [{num_a}, {num_b}]. El volumen calculado "
-                f"asume que una curva es siempre exterior (basado en el punto medio). "
-                f"Esto puede dar un valor incorrecto si el cruce ocurre cerca de los límites."
+        if not has_crossings:
+            t_info = intervals[0]
+            r_outer = t_info["r_outer"]
+            r_inner = t_info["r_inner"]
+            integrand_core = t_info["core"]
+            integrand = sympy.pi * integrand_core
+            vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
+            try:
+                num_val = float(vol_sym.evalf())
+            except (TypeError, ValueError):
+                num_val = None
+
+            steps = _build_volume_steps(
+                method=SolidMethod.WASHERS,
+                region=region,
+                axis=axis,
+                var_sym=var_sym,
+                sym_a=sym_a,
+                sym_b=sym_b,
+                integrand_core=integrand_core,
+                vol_sym=vol_sym,
+                num_val=num_val,
+                r_outer=r_outer,
+                r_inner=r_inner,
             )
 
-        integrand_core = r_outer**2 - r_inner**2
-        integrand = sympy.pi * integrand_core
-        vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
+            return VolumeResult(
+                method=SolidMethod.WASHERS,
+                exact_plain_text=str(vol_sym),
+                exact_latex=_clean_latex(sympy.latex(vol_sym)),
+                numeric_value=num_val,
+                integrand_plain_text=str(integrand),
+                integrand_latex=_clean_latex(sympy.latex(integrand)),
+                integral_setup_latex=_clean_latex(
+                    rf"\pi \int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}} "
+                    rf"\left[ {sympy.latex(r_outer)}^2 - {sympy.latex(r_inner)}^2 \right] d{region.variable}"
+                ),
+                is_success=True,
+                steps=steps,
+                warnings=[],
+            )
+        else:
+            vol_partials = []
+            setup_parts = []
+            for item in intervals:
+                sub_a_sym = item["t0_sym"]
+                sub_b_sym = item["t1_sym"]
+                core_j = item["core"]
+                v_j = sympy.integrate(sympy.pi * core_j, (var_sym, sub_a_sym, sub_b_sym))
+                vol_partials.append(v_j)
+                setup_parts.append(
+                    rf"\pi \int_{{{sympy.latex(sub_a_sym)}}}^{{{sympy.latex(sub_b_sym)}}} "
+                    rf"\left[ {sympy.latex(item['r_outer'])}^2 - {sympy.latex(item['r_inner'])}^2 \right] d{region.variable}"
+                )
 
-        try:
-            num_val = float(vol_sym.evalf())
-        except (TypeError, ValueError):
-            num_val = None
+            vol_sym = sympy.simplify(sum(vol_partials))
+            try:
+                num_val = float(vol_sym.evalf())
+            except (TypeError, ValueError):
+                num_val = None
 
-        steps = _build_volume_steps(
-            method=SolidMethod.WASHERS,
-            region=region,
-            axis=axis,
-            var_sym=var_sym,
-            sym_a=sym_a,
-            sym_b=sym_b,
-            integrand_core=integrand_core,
-            vol_sym=vol_sym,
-            num_val=num_val,
-            r_outer=r_outer,
-            r_inner=r_inner,
-        )
+            setup_latex = _clean_latex(" + ".join(setup_parts))
+            steps = _build_piecewise_washer_steps(
+                region=region,
+                axis=axis,
+                var_sym=var_sym,
+                intervals=intervals,
+                vol_partials=vol_partials,
+                vol_sym=vol_sym,
+                num_val=num_val,
+            )
 
-        return VolumeResult(
-            method=SolidMethod.WASHERS,
-            exact_plain_text=str(vol_sym),
-            exact_latex=_clean_latex(sympy.latex(vol_sym)),
-            numeric_value=num_val,
-            integrand_plain_text=str(integrand),
-            integrand_latex=_clean_latex(sympy.latex(integrand)),
-            integral_setup_latex=_clean_latex(
-                f"\\pi \\int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}} "
-                f"\\left[ {sympy.latex(r_outer)}^2 - {sympy.latex(r_inner)}^2 \\right] d{region.variable}"
-            ),
-            is_success=True,
-            steps=steps,
-            warnings=warnings_from_curves if warnings_from_curves else [],
-        )
+            cross_warn = [
+                f"Las curvas se cruzan dentro del intervalo [{num_a}, {num_b}]. La región se dividió "
+                f"en {len(intervals)} subintervalos para calcular el volumen geométrico exacto por tramos."
+            ]
+
+            return VolumeResult(
+                method=SolidMethod.WASHERS,
+                exact_plain_text=str(vol_sym),
+                exact_latex=_clean_latex(sympy.latex(vol_sym)),
+                numeric_value=num_val,
+                integrand_plain_text=" + ".join(str(sympy.pi * it["core"]) for it in intervals),
+                integrand_latex=setup_latex,
+                integral_setup_latex=setup_latex,
+                is_success=True,
+                steps=steps,
+                warnings=cross_warn,
+            )
     except Exception as exc:
         return VolumeResult(
             method=SolidMethod.WASHERS,
@@ -1431,6 +1769,61 @@ def is_method_compatible(
 # Motor de Recomendación Explicable
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _check_axis_intersects_region(
+    region: Region2D,
+    axis: RevolutionAxis,
+    num_a: float,
+    num_b: float,
+    f_sym: sympy.Expr,
+    g_sym: sympy.Expr,
+    var_sym: sympy.Symbol,
+) -> str | None:
+    """Verifica si el eje de rotación atraviesa el interior de la región plana."""
+    k = axis.position
+    if region.variable == "x":
+        if axis.orientation == AxisOrientation.VERTICAL:
+            if num_a < k < num_b:
+                return (
+                    f"El eje {axis.label} atraviesa el interior del intervalo de integración x ∈ [{num_a:.4g}, {num_b:.4g}]."
+                )
+        else:
+            # Eje horizontal y = k
+            pts = [num_a + (num_b - num_a) * t for t in (0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0)]
+            for p in pts:
+                try:
+                    yf = float(f_sym.subs(var_sym, p).evalf())
+                    yg = float(g_sym.subs(var_sym, p).evalf())
+                    if min(yf, yg) < k < max(yf, yg):
+                        return (
+                            f"El eje {axis.label} atraviesa el interior de la región entre y={min(yf, yg):.2f} y y={max(yf, yg):.2f}, "
+                            "lo cual provocaría autointersecciones."
+                        )
+                except Exception:
+                    pass
+    else:
+        # region.variable == 'y'
+        if axis.orientation == AxisOrientation.HORIZONTAL:
+            if num_a < k < num_b:
+                return (
+                    f"El eje {axis.label} atraviesa el interior del intervalo de integración y ∈ [{num_a:.4g}, {num_b:.4g}]."
+                )
+        else:
+            # Eje vertical x = k
+            pts = [num_a + (num_b - num_a) * t for t in (0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0)]
+            for p in pts:
+                try:
+                    xf = float(f_sym.subs(var_sym, p).evalf())
+                    xg = float(g_sym.subs(var_sym, p).evalf())
+                    if min(xf, xg) < k < max(xf, xg):
+                        return (
+                            f"El eje {axis.label} atraviesa el interior de la región entre x={min(xf, xg):.2f} y x={max(xf, xg):.2f}, "
+                            "lo cual provocaría autointersecciones."
+                        )
+                except Exception:
+                    pass
+    return None
+
+
 def recommend_method(
     region: Region2D,
     axis: RevolutionAxis,
@@ -1450,8 +1843,6 @@ def recommend_method(
             limitations_or_warnings=["Motor matemático SymPy ausente."],
         )
 
-    warnings: list[str] = []
-
     try:
         f_parsed = _ensure_parsed(region.f_expr)
         g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
@@ -1466,33 +1857,15 @@ def recommend_method(
         )
 
     # 1. Comprobar si el eje intersecta el interior de la región
-    mid_t = (num_a + num_b) / 2.0
-    val_f_mid = float(f_parsed.sympy_expr.subs(var_sym, mid_t).evalf())
-    val_g_mid = float(g_parsed.sympy_expr.subs(var_sym, mid_t).evalf())
-    top_mid = max(val_f_mid, val_g_mid)
-    bot_mid = min(val_f_mid, val_g_mid)
-
-    if region.variable == "x":
-        if axis.orientation == AxisOrientation.HORIZONTAL:
-            # Eje horizontal y = k vs región vertical en y
-            if bot_mid < axis.position < top_mid:
-                warnings.append(
-                    f"El eje {axis.label} atraviesa el interior de la región entre y={bot_mid:.2f} y y={top_mid:.2f}, "
-                    "lo cual provocaría autointersecciones."
-                )
-        else:
-            # Eje vertical x = h vs límites en x
-            if num_a < axis.position < num_b:
-                warnings.append(
-                    f"El eje {axis.label} atraviesa el interior del intervalo de integración x ∈ [{num_a}, {num_b}]."
-                )
-
-    if warnings:
+    axis_err = _check_axis_intersects_region(
+        region, axis, num_a, num_b, f_parsed.sympy_expr, g_parsed.sympy_expr, var_sym
+    )
+    if axis_err:
         return MethodRecommendation(
             recommended_method=None,
             justification="No se puede recomendar un método con el eje dentro de la región.",
             is_decidable=False,
-            limitations_or_warnings=warnings,
+            limitations_or_warnings=[axis_err],
         )
 
     # 2. Determinar método natural según paralelismo/perpendicularidad

@@ -23,6 +23,14 @@ viz3d = [
     "PySide6-Addons>=6.6",  # Incluye QWebEngineWidgets para Three.js
 ]
 
+[tool.setuptools.package-data]
+integrallab = ["resources/**/*", "resources/*"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["integrallab*"]
+exclude = ["integrallab.viz.experimental*", "tests*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

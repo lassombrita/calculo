@@ -109,10 +109,22 @@
         dirLight2.position.set(-15, -10, -15);
         scene.add(dirLight2);
 
-        // Grilla suave en el plano XY o XZ
-        const gridHelper = new THREE.GridHelper(20, 20, 0x334155, 0x1e293b);
+        // Grilla dinámica: se redimensiona con el sólido en fitCameraToObject
+        let gridHelper = new THREE.GridHelper(20, 20, 0x334155, 0x1e293b);
         gridHelper.position.y = -0.01;
         scene.add(gridHelper);
+
+        function updateGrid(maxDim) {
+            // Elimina la grilla anterior y crea una proporcional al sólido
+            scene.remove(gridHelper);
+            if (gridHelper.geometry) gridHelper.geometry.dispose();
+            if (gridHelper.material) gridHelper.material.dispose();
+            const gridSize = Math.ceil(maxDim * 2.5);
+            const divisions = Math.min(Math.max(Math.ceil(gridSize / 2), 10), 40);
+            gridHelper = new THREE.GridHelper(gridSize, divisions, 0x334155, 0x1e293b);
+            gridHelper.position.y = -0.01;
+            scene.add(gridHelper);
+        }
 
         // ────────────────────────────────────────────────────────────────────────
         // 4. Objetos y Mallas de Sólidos
@@ -256,11 +268,23 @@
             const size = box.getSize(new THREE.Vector3());
             const maxDim = Math.max(size.x, size.y, size.z, 2.0);
 
+            // Actualizar near/far dinámicamente para evitar clipping en sólidos grandes
+            camera.near = maxDim * 0.001;
+            camera.far  = maxDim * 200;
+            camera.updateProjectionMatrix();
+
             controls.target.copy(center);
             const distance = maxDim * 2.2;
-            camera.position.set(center.x + distance * 0.7, center.y + distance * 0.5, center.z + distance * 0.8);
+            camera.position.set(
+                center.x + distance * 0.7,
+                center.y + distance * 0.5,
+                center.z + distance * 0.8
+            );
             camera.lookAt(center);
             controls.update();
+
+            // Actualizar la grilla al tamaño del sólido
+            updateGrid(maxDim);
         }
 
         // ────────────────────────────────────────────────────────────────────────

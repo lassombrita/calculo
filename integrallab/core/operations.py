@@ -178,12 +178,43 @@ def integrate_definite(
             error_message="El motor matemático SymPy no está disponible.",
         )
 
+    import math as _math
     try:
         parsed = expression if isinstance(expression, ParsedExpression) else parse_math_expression(expression)
         sym_var = sympy.Symbol(variable)
 
-        sym_lower = sympy.sympify(lower_limit)
-        sym_upper = sympy.sympify(upper_limit)
+        # Parsear límites de forma segura (sin sympify directo sobre texto arbitrario)
+        from integrallab.core.parser import _SAFE_LOCAL_DICT, _get_transformations
+        from sympy.parsing.sympy_parser import parse_expr as _parse_expr
+
+        def _safe_limit(lim: object) -> sympy.Expr:
+            if isinstance(lim, sympy.Basic):
+                return lim  # type: ignore[return-value]
+            lim_str = str(lim).strip()
+            try:
+                return _parse_expr(
+                    lim_str,
+                    transformations=_get_transformations(),
+                    global_dict={"__builtins__": {}},
+                    local_dict=_SAFE_LOCAL_DICT,
+                )
+            except Exception:
+                return sympy.sympify(lim_str)
+
+        sym_lower = _safe_limit(lower_limit)
+        sym_upper = _safe_limit(upper_limit)
+
+        # Rechazar límites no finitos
+        try:
+            lo = float(sym_lower.evalf())
+            hi = float(sym_upper.evalf())
+        except Exception as exc:
+            raise ValueError(f"Los límites no se pueden evaluar a números reales: {exc}") from exc
+
+        if not (_math.isfinite(lo) and _math.isfinite(hi)):
+            raise ValueError(
+                f"Los límites de integración deben ser finitos. Obtenido: [{lo}, {hi}]."
+            )
 
         result_sym = sympy.integrate(parsed.sympy_expr, (sym_var, sym_lower, sym_upper))
 
@@ -191,6 +222,19 @@ def integrate_definite(
             num_val = float(result_sym.evalf())
         except (TypeError, ValueError):
             num_val = None
+
+        # Detectar resultado no finito (integral divergente)
+        if num_val is not None and not _math.isfinite(num_val):
+            return NumericResult(
+                value=None,
+                exact_plain_text=str(result_sym),
+                exact_latex=sympy.latex(result_sym),
+                is_success=False,
+                error_message=(
+                    "La integral no converge (resultado no finito). "
+                    "Verifique que la función no tenga singularidades en el intervalo."
+                ),
+            )
 
         return NumericResult(
             value=num_val,
