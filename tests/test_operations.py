@@ -45,3 +45,10 @@ def test_integrate_definite_polynomial() -> None:
     assert res.value is not None
     assert math.isclose(res.value, 9.0, rel_tol=1e-5)
     assert res.exact_plain_text == "9"
+
+
+def test_integrate_definite_blocks_rce_payload_in_limits() -> None:
+    """Verifica que payloads maliciosos en los límites sean bloqueados (item 1 audit)."""
+    res = integrate_definite("x", "0", "__import__('os').system('touch /tmp/pwned.txt')")
+    assert not res.is_success
+    assert "no están permitidos" in (res.error_message or "")

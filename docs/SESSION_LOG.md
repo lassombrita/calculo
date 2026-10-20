@@ -739,3 +739,43 @@
    - Actualizados conteos en `README.md` y `AGENTS.md`.
 
 8. **Suite de pruebas**: **174 pruebas aprobadas al 100 %** (0 fallos, 0 errores en 23 s).
+
+---
+
+## Sesión 14 — Remediación técnica y robustez avanzada (Auditoría Octubre 2026)
+
+**Fecha:** 2026-10-19 / 2026-10-20
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6
+
+### Hecho
+
+1. **Blindaje RCE en límites de integración y unificación de parseo**:
+   - Eliminado el fallback inseguro a `sympy.sympify` en `_safe_limit` (`operations.py`) y `_evaluate_bounds` (`solids.py`).
+   - Sustituido por `parse_numeric_or_symbolic()` en `operations.py`, `solids.py` y `main_window.py`.
+   - Test unitario específico `test_integrate_definite_blocks_rce_payload_in_limits` verificando que un payload como `__import__('os').system(...)` genera `ExpressionParseError` sin evaluar código arbitrario.
+
+2. **Prevención de descomposición silenciosa de funciones no reconocidas**:
+   - Mitigado el comportamiento de SymPy con multiplicación implícita (`foobar(x)` → `f*o*o*b*a*r*x`).
+   - Implementada detección estructural `_check_unrecognized_functions` que lanza `ExpressionParseError` claro ante identificadores de varias letras no registrados que preceden paréntesis de llamada.
+   - Añadidos aliases canónicos y logaritmos: `arcsin`, `arccos`, `arctan`, `arccot`, `arcsec`, `arccsc`, `ctg`, `cotg`, `cotan`, `cosec`, `ctgh`, `arcsinh`, etc., junto con reescritura de `log10(x)` → `log(x, 10)` y `log2(x)` → `log(x, 2)`.
+   - Tests añadidos en `tests/test_parser.py`: `test_parser_handles_extended_aliases_and_log10` y `test_parser_blocks_unknown_functions_instead_of_silent_split`.
+
+3. **Validación AST contra bypass de acceso a atributos con espacios**:
+   - Identificado y corregido el bypass del regex `\.[a-zA-Z_]` mediante espacios (e.g. `Integer(1). real`).
+   - Actualizado el regex a `\.\s*[a-zA-Z_]` y añadido validador estructural `_validate_code_ast` con `ast.parse(code, mode='eval')` y recorrido `ast.walk`, bloqueando nodos `ast.Attribute`, `ast.Subscript`, `ast.Lambda` y `ast.Import`.
+   - Test unitario añadido en `tests/test_parser.py`: `test_parser_blocks_spaced_attribute_access`.
+
+4. **Cálculo asíncrono en segundo plano (`QThread`)**:
+   - Implementada clase `CalculationWorker(QThread)` y dataclass `CalculationOutput` en `integrallab/ui/main_window.py`.
+   - Los cálculos pesados de integración y generación de sólidos se desacoplan del hilo principal de la interfaz de usuario en modo interactivo.
+   - Indicador visual inmediato en la barra de estado: `"⏳ Calculando región y sólido de revolución..."`.
+   - Soporte para cancelación mediante la tecla `Esc` (`keyPressEvent`), que solicita la interrupción del hilo y restaura la interfaz.
+   - Modo de ejecución determinista síncrono preservado para entornos headless y pruebas unitarias (`_show_dialogs == False` o `QT_QPA_PLATFORM == "offscreen"`).
+
+5. **Umbral relativo dinámico para ruido imaginario en muestreo**:
+   - Modificado `integrallab/core/sampling.py`: umbral relativo `abs(val.imag) < 1e-9 * max(1.0, abs(val.real))` para prevenir descarte erróneo de valores reales grandes con artefactos de redondeo de punto flotante.
+
+6. **Consistencia de métricas y documentación**:
+   - Actualizado `docs/PROJECT_STATUS.md` corrigiendo referencias residuales a versiones anteriores.
+   - Verificada la suite completa de pruebas: **178 pruebas aprobadas al 100 %** (0 fallos, 0 errores en 23.75 s).
+

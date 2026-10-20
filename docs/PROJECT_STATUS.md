@@ -1,16 +1,16 @@
 # Estado del proyecto — IntegralLab
 
 > Este archivo se actualiza **al terminar cada sesión** de trabajo.
-> Última actualización: **2026-10-19** — Implementación completa de soluciones de auditoría técnica: blindaje RCE en parser con lista blanca y sandbox, normalizador es-CO (sen, tg, 0,5, x², π, √, Abs, E), corrección de inversión en dy para curvas decrecientes (4-x²), detección robusta de eje cortando la región (C4), validación de convergencia y finitud, algoritmo tridiagonal O(n) para splines cúbicos naturales, empaquetado de resources en pyproject.toml y archivo de reportes sueltos en docs/archive/. **174 pruebas pasando al 100 %.**
+> Última actualización: **2026-10-19** — Implementación completa de soluciones de auditoría técnica y remediación de robustez: blindaje RCE en parser con lista blanca y sandbox AST, prevención de descomposiciones silenciosas de funciones desconocidas, normalizador es-CO (sen, tg, 0,5, x², π, √, Abs, E), corrección de inversión en dy para curvas decrecientes (4-x²), cálculo asíncrono en UI con QThread (sin congelamiento de interfaz), umbral dinámico de ruido imaginario, empaquetado de resources y archivo de reportes sueltos en docs/archive/. **178 pruebas pasando al 100 %.**
 
-> **Fases 1–12 completadas**: Selector de método, muestreo adaptativo, lienzo 3D a escala real, exportación PDF, diseño *glass/dark*, interpolación numérica (Lagrange/Newton/Splines naturales), Three.js WebGL offline, arandelas por tramos y blindaje de seguridad matemática.
+> **Fases 1–12 completadas**: Selector de método, muestreo adaptativo, lienzo 3D a escala real, exportación PDF, diseño *glass/dark*, interpolación numérica (Lagrange/Newton/Splines naturales), Three.js WebGL offline, arandelas por tramos, motor pedagógico y blindaje de seguridad matemática.
 
 
 ## Fase actual
 
 ✅ **Fase 11: Refinamiento pedagógico, corrección LaTeX y motor 3D interactivo** — Completada
 ✅ **Fase 12: Interpolación numérica, despeje analítico en dy y Three.js** — Completada
-✅ **Auditoría técnica y seguridad matemática implementadas** — Completada (174 tests passing)
+✅ **Auditoría técnica y seguridad matemática implementadas** — Completada (178 tests passing)
 
 ## Estado por fases
 
@@ -29,7 +29,7 @@
 | **9. Exportación a PDF** | **Botón "Exportar a PDF" en pestaña Desarrollo con `QPrinter`/`QFileDialog`** | **✅ Completada** |
 | **11. Refinamiento pedagógico & 3D interactivo** | **Bugs LaTeX corregidos, jerga colombiana, paleta Blue-Gray, NavigationToolbar, rotación y zoom 3D** | **✅ Completada** |
 | **11.1 Rediseño visual glass/dark** | **Tema oscuro, `GlassCard`, canvas premium (glow, tooltip, revelado), recuperación de regresión en `main_window`/`canvas`/`latex_render`** | **✅ Completada** |
-| **12. Interpolación y despeje analítico en dy** | **Interpolación numérica (Lagrange, Newton, Splines), parseo de puntos discretos y despeje analítico con SymPy en dy** | **✅ Completada (166 tests passing)** |
+| **12. Interpolación y despeje analítico en dy** | **Interpolación numérica (Lagrange, Newton, Splines), parseo de puntos discretos y despeje analítico con SymPy en dy** | **✅ Completada (178 tests passing)** |
 
 ## Entorno verificado
 
@@ -77,10 +77,10 @@ Verificado en disco:
     - ✅ `integrallab/ui/theme.py` — tokens de diseño, QSS y paleta Qt oscura
     - ✅ `integrallab/ui/widgets/` — `glass.py` (GlassCard), `aurora.py` (fondo), `ai_pulse.py` y `chat_panel.py` (futuro panel de IA, sin conectar)
     - ✅ `integrallab/ui/main_window.py` — MainWindow con exportación PDF (`export_to_pdf`, `_export_to_pdf_path`)
-- ✅ `tests/` — **174 pruebas pasando al 100 %**
+- ✅ `tests/` — **178 pruebas pasando al 100 %**
   - ✅ `tests/test_smoke.py` (3 tests)
-  - ✅ `tests/test_parser.py` (6 tests)  ← +2 pruebas de seguridad RCE y es-CO
-  - ✅ `tests/test_operations.py` (4 tests)
+  - ✅ `tests/test_parser.py` (9 tests)  ← +5 pruebas de seguridad RCE, modismos es-CO, aliases trigonométricos/log10, prevención de descomposición silenciosa y bloqueo AST de atributos con espacios
+  - ✅ `tests/test_operations.py` (5 tests)  ← +1 prueba de bloqueo RCE en límites simbólicos
   - ✅ `tests/test_sampling.py` (8 tests)
   - ✅ `tests/test_adaptive.py` (26 tests)
   - ✅ `tests/test_interpolation.py` (14 tests)
@@ -95,8 +95,12 @@ Verificado en disco:
 
 ## Siguiente tarea atómica
 
-- [x] **Fase 12 y Soluciones de Auditoría completadas** — 174 tests al 100%.
-  - [x] Parser seguro (C1): sandbox con lista blanca estricta, bloqueo de dunders, atributos y RCE.
+- [x] **Fase 12 y Remediación de Auditoría completadas** — 178 tests al 100%.
+  - [x] Parser seguro (C1): sandbox con lista blanca estricta, validación AST (`ast.walk`), bloqueo de dunders, atributos (`.attr` y `. attr`) y RCE.
+  - [x] Prevención de descomposición silenciosa: rechazo de identificadores desconocidos seguidos de paréntesis (ej. `foobar(x)`), y aliases extendidos (`arcsin`, `ctg`, `log10`, `log2`, etc.).
+  - [x] Blindaje de límites: sustitución total de fallbacks `sympify` ciegos por `parse_numeric_or_symbolic` en `operations.py`, `solids.py` y UI.
+  - [x] Cálculo asíncrono con `QThread` (`CalculationWorker`): evita congelamiento de interfaz ante integrales costosas, con feedback "⏳ Calculando..." y cancelación interactiva con `Esc`.
+  - [x] Umbral dinámico relativo de ruido imaginario en muestreo: `abs(val.imag) < 1e-9 * max(1.0, abs(val.real))`.
   - [x] Normalizador es-CO (C6): soporte nativo de sen, tg, 0,5, x², π, √, Abs, E.
   - [x] Inversión a dy para curvas decrecientes (C2): 4-x² discos en eje Y = 25.13, casquillos en eje X = 53.62.
   - [x] Detección robusta de eje cortando la región (C4): muestreo multipunto en recommend_method.
@@ -104,4 +108,3 @@ Verificado en disco:
   - [x] Splines cúbicos naturales estándar (C7): algoritmo tridiagonal O(n) con condiciones de frontera natural.
   - [x] Empaquetado `resources/` en `pyproject.toml` y archivado de reportes en `docs/archive/`.
 - [ ] **Fase 13 (propuesta):** Superficie de área de revolución o exportación de informes HTML interactivos.
-- [ ] **Fase 13 (propuesta):** Superficie de área de revolución, o exportación de informes HTML interactivos.

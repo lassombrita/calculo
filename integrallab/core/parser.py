@@ -8,11 +8,13 @@ sin exponer excepciones internas a la capa de UI.
 Seguridad:
 El parser usa una lista blanca estricta de funciones matemáticas y constantes,
 bloqueando cualquier acceso a `__builtins__`, identificadores dunder (`__`),
-acceso a atributos Python con punto (`.attribute`), y palabras clave de ejecución.
+acceso a atributos Python con o sin espacios (`.attribute`, `. real`),
+operaciones de indexación y palabras clave de ejecución.
 """
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -21,9 +23,11 @@ try:
     import sympy
     from sympy.parsing.sympy_parser import (
         convert_xor,
+        eval_expr,
         implicit_multiplication_application,
         parse_expr,
         standard_transformations,
+        stringify_expr,
     )
     _SYMPY_AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -105,7 +109,7 @@ def _build_safe_dicts() -> tuple[dict[str, Any], dict[str, Any]]:
         "acot": sympy.acot,
         "asec": sympy.asec,
         "acsc": sympy.acsc,
-        # Hiperbólicas
+        # Hiperbólicas e inversas
         "sinh": sympy.sinh,
         "cosh": sympy.cosh,
         "tanh": sympy.tanh,
@@ -113,6 +117,9 @@ def _build_safe_dicts() -> tuple[dict[str, Any], dict[str, Any]]:
         "asinh": sympy.asinh,
         "acosh": sympy.acosh,
         "atanh": sympy.atanh,
+        "acoth": sympy.acoth,
+        "asech": sympy.asech,
+        "acsch": sympy.acsch,
         # Exponencial y logaritmo
         "exp": sympy.exp,
         "log": sympy.log,
@@ -151,14 +158,14 @@ BANNED_KEYWORDS = {
 
 
 def _validate_safety(text: str) -> None:
-    """Valida que el texto no contenga vectores de inyección ni código malicioso."""
+    """Valida preventivamente que el texto no contenga vectores de inyección."""
     if "__" in text:
         raise ExpressionParseError(
             "Identificadores con '__' no están permitidos por razones de seguridad."
         )
-    # Detectar acceso a atributos con punto (ej. os.system, foo.bar)
+    # Detectar acceso a atributos con punto (ej. os.system, foo.bar, Integer(1). real)
     # Se permiten números con decimales (.5, 3.14), pero no .identificador
-    if re.search(r'\.[a-zA-Z_]', text):
+    if re.search(r'\.\s*[a-zA-Z_]', text):
         raise ExpressionParseError(
             "Acceso a atributos no está permitido por razones de seguridad."
         )
@@ -168,6 +175,40 @@ def _validate_safety(text: str) -> None:
             raise ExpressionParseError(
                 f"Identificador prohibido por razones de seguridad: '{tok}'."
             )
+
+
+def _validate_code_ast(code_str: str) -> None:
+    """Valida la estructura sintáctica del árbol AST generado antes de evaluarlo."""
+    try:
+        tree = ast.parse(code_str, mode="eval")
+    except Exception as exc:
+        raise ExpressionParseError(f"Error de sintaxis en la expresión: {exc}") from exc
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            raise ExpressionParseError(
+                f"Acceso a atributos ('.{node.attr}') no está permitido por razones de seguridad."
+            )
+        if isinstance(node, (ast.Subscript, ast.Slice)):
+            raise ExpressionParseError(
+                "Operaciones de indexación o subíndices no están permitidas por seguridad."
+            )
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            raise ExpressionParseError("Comprensiones no están permitidas por seguridad.")
+        if isinstance(node, ast.Lambda):
+            raise ExpressionParseError("Expresiones lambda no están permitidas.")
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name):
+                raise ExpressionParseError("Llamadas dinámicas no permitidas.")
+            if node.func.id not in _SAFE_GLOBAL_DICT:
+                raise ExpressionParseError(
+                    f"Llamada a función no permitida por seguridad: '{node.func.id}'."
+                )
+        if isinstance(node, ast.Name):
+            if node.id.startswith("_") or "__" in node.id:
+                raise ExpressionParseError(
+                    f"Identificador '{node.id}' no permitido por seguridad."
+                )
 
 
 # Transformaciones estándar de SymPy
@@ -219,6 +260,26 @@ def _replace_abs_bars(text: str) -> str:
     return ''.join(result)
 
 
+def _replace_log_base(text: str, placeholder: str, base: int) -> str:
+    """Reemplaza placeholder(expr) por log(expr, base) respetando paréntesis balanceados."""
+    while placeholder in text:
+        idx = text.find(placeholder)
+        open_paren = text.find('(', idx)
+        if open_paren == -1:
+            break
+        depth = 1
+        j = open_paren + 1
+        while j < len(text) and depth > 0:
+            if text[j] == '(':
+                depth += 1
+            elif text[j] == ')':
+                depth -= 1
+            j += 1
+        inner = text[open_paren + 1 : j - 1]
+        text = text[:idx] + f"log({inner}, {base})" + text[j:]
+    return text
+
+
 def _normalize_expression(text: str) -> str:
     """Normaliza una expresión en castellano (es-CO) a sintaxis SymPy.
 
@@ -229,8 +290,8 @@ def _normalize_expression(text: str) -> str:
     4. Símbolo π → pi.
     5. Raíz cuadrada √expr → sqrt(expr).
     6. Valor absoluto |expr| → Abs(expr).
-    7. Aliases en español: sen→sin, tg→tan, arcsen→asin, arctg→atan, raiz→sqrt,
-       cosec→csc, senh→sinh, cosenh→csinh, tgh→tanh, arcsenh→asinh, ln→log.
+    7. Logaritmos con base: log10(...) → log(..., 10), log2(...) → log(..., 2).
+    8. Aliases trigonométricos e hiperbólicos (ordenados de más largos a más cortos).
     """
     s = text.strip()
 
@@ -253,17 +314,32 @@ def _normalize_expression(text: str) -> str:
     # 6. Valor absoluto: |expr| → Abs(expr)
     s = _replace_abs_bars(s)
 
-    # 7. Aliases en español (orden: más largo primero)
+    # 7. Preservar log10 y log2 antes de que aliases o multiplicaciones los descompongan
+    s = re.sub(r'\blog10\s*\(', r'_ph_log10(', s)
+    s = re.sub(r'\blog2\s*\(', r'_ph_log2(', s)
+
+    # 8. Aliases en español e inglés extendidos (orden: más largo primero)
     aliases = [
+        ('arcsinh', 'asinh'),
+        ('arccosh', 'acosh'),
+        ('arctanh', 'atanh'),
+        ('arccoth', 'acoth'),
         ('arcsen',  'asin'),
+        ('arcsin',  'asin'),
         ('arccos',  'acos'),
-        ('arctg',   'atan'),
         ('arctan',  'atan'),
+        ('arctg',   'atan'),
+        ('arccot',  'acot'),
+        ('arccsc',  'acsc'),
+        ('arcsec',  'asec'),
+        ('cotan',   'cot'),
+        ('cotg',    'cot'),
+        ('ctg',     'cot'),
         ('cosec',   'csc'),
         ('senh',    'sinh'),
         ('cosenh',  'asinh'),
         ('tgh',     'tanh'),
-        ('arcsenh', 'asinh'),
+        ('ctgh',    'coth'),
         ('sen',     'sin'),
         ('tg',      'tan'),
         ('raiz',    'sqrt'),
@@ -272,7 +348,28 @@ def _normalize_expression(text: str) -> str:
     for es, en in aliases:
         s = re.sub(r'\b' + re.escape(es) + r'\b', en, s)
 
+    # Reemplazar placeholders de log10 y log2
+    s = _replace_log_base(s, '_ph_log10', 10)
+    s = _replace_log_base(s, '_ph_log2', 2)
+
     return s
+
+
+def _check_unrecognized_functions(text: str) -> None:
+    """Verifica que ningún identificador previo a un paréntesis sea desconocido.
+
+    Evita que funciones no reconocidas sean descompuestas silenciosamente en
+    multiplicaciones implícitas de símbolos de una letra (ej. 'arcsin(x)' -> a*c*i*n*r*s*x).
+    """
+    matches = re.finditer(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', text)
+    for m in matches:
+        func_name = m.group(1)
+        # Identificadores de más de una letra seguidos de paréntesis deben ser funciones conocidas
+        if len(func_name) > 1 and func_name not in _SAFE_LOCAL_DICT:
+            raise ExpressionParseError(
+                f"Función matemática no reconocida: '{func_name}()'. "
+                f"Verifique la ortografía o consulte las funciones admitidas."
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -284,7 +381,7 @@ def parse_math_expression(text: str) -> ParsedExpression:
 
     Acepta sintaxis estándar, amigable y en español colombiano:
     - 'x^2 + 2x - 1'
-    - 'sin(x) * cos(x)', 'sen(x)', 'tg(x)'
+    - 'sin(x) * cos(x)', 'sen(x)', 'tg(x)', 'arcsin(x)', 'ctg(x)', 'log10(x)'
     - 'e^(2*x)'  (e como constante de Euler)
     - 'sqrt(x)', 'raiz(x)', '√x'
     - '|x|', 'Abs(x)'
@@ -298,7 +395,8 @@ def parse_math_expression(text: str) -> ParsedExpression:
         Instancia de ParsedExpression con representaciones texto, latex y simbólica.
 
     Raises:
-        ExpressionParseError: Si la cadena está vacía, contiene caracteres inválidos o no es parseable.
+        ExpressionParseError: Si la cadena está vacía, contiene caracteres inválidos,
+            funciones no reconocidas o código malicioso.
     """
     clean_text = text.strip()
     if not clean_text:
@@ -314,19 +412,30 @@ def parse_math_expression(text: str) -> ParsedExpression:
             variables=["x"],
         )
 
-    # Validación de seguridad previa al análisis
+    # 1. Validación preventiva de seguridad
     _validate_safety(clean_text)
 
-    # Normalizar (es-CO → SymPy)
+    # 2. Normalizar (es-CO y alias → SymPy estándar)
     normalized = _normalize_expression(clean_text)
 
+    # 3. Red de seguridad estructural: bloquear funciones no reconocidas
+    _check_unrecognized_functions(normalized)
+
     try:
-        sym_expr = parse_expr(
+        # 4. Transformar a código Python mediante transformaciones de SymPy
+        code = stringify_expr(
             normalized,
-            transformations=_get_transformations(),
-            global_dict=_SAFE_GLOBAL_DICT,
-            local_dict=_SAFE_LOCAL_DICT,
+            _SAFE_LOCAL_DICT,
+            _SAFE_GLOBAL_DICT,
+            _get_transformations(),
         )
+
+        # 5. Validación estricta del AST antes de evaluación
+        _validate_code_ast(code)
+
+        # 6. Evaluación aislada y segura
+        sym_expr = eval_expr(code, _SAFE_LOCAL_DICT, _SAFE_GLOBAL_DICT)
+
         free_symbols = sorted([str(s) for s in sym_expr.free_symbols])
         latex_repr = sympy.latex(sym_expr)
         str_repr = str(sym_expr)

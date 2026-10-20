@@ -101,7 +101,7 @@ def sample_expression(
                 val = f_lambdified(x)
                 # Convertir a float real si es un número válido
                 if isinstance(val, complex):
-                    y = float(val.real) if abs(val.imag) < 1e-12 else math.nan
+                    y = float(val.real) if abs(val.imag) < 1e-9 * max(1.0, abs(val.real)) else math.nan
                 else:
                     y = float(val)
                 # Acotar valores infinitos

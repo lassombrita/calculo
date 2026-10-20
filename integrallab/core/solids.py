@@ -227,25 +227,13 @@ def _evaluate_bounds(
         ValueError: Si los límites son nan, inf o si a >= b.
     """
     import math as _math
-    from integrallab.core.parser import _SAFE_LOCAL_DICT, _get_transformations
-    from sympy.parsing.sympy_parser import parse_expr as _parse_expr
+    from integrallab.core.parser import parse_numeric_or_symbolic
 
-    def _safe_sympify(v: object) -> sympy.Expr:
-        if isinstance(v, sympy.Basic):
-            return v  # type: ignore[return-value]
-        v_str = str(v).strip()
-        try:
-            return _parse_expr(
-                v_str,
-                transformations=_get_transformations(),
-                global_dict={"__builtins__": {}},
-                local_dict=_SAFE_LOCAL_DICT,
-            )
-        except Exception:
-            return sympy.sympify(v_str)
-
-    sym_a = _safe_sympify(a_in)
-    sym_b = _safe_sympify(b_in)
+    try:
+        sym_a = parse_numeric_or_symbolic(a_in)
+        sym_b = parse_numeric_or_symbolic(b_in)
+    except Exception as exc:
+        raise ValueError(f"Los límites no son expresiones válidas: {exc}") from exc
     try:
         num_a = float(sym_a.evalf())
         num_b = float(sym_b.evalf())
