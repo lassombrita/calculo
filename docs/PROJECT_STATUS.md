@@ -9,7 +9,7 @@
 ## Fase actual
 
 ✅ **Fase 11: Refinamiento pedagógico, corrección LaTeX y motor 3D interactivo** — Completada
-✅ **Fase 12: Interpolación numérica y despeje analítico en dy** — Completada (159 tests passing)
+✅ **Fase 12: Interpolación numérica y despeje analítico en dy** — Completada (166 tests passing)
 
 ## Estado por fases
 
@@ -28,7 +28,7 @@
 | **9. Exportación a PDF** | **Botón "Exportar a PDF" en pestaña Desarrollo con `QPrinter`/`QFileDialog`** | **✅ Completada** |
 | **11. Refinamiento pedagógico & 3D interactivo** | **Bugs LaTeX corregidos, jerga colombiana, paleta Blue-Gray, NavigationToolbar, rotación y zoom 3D** | **✅ Completada** |
 | **11.1 Rediseño visual glass/dark** | **Tema oscuro, `GlassCard`, canvas premium (glow, tooltip, revelado), recuperación de regresión en `main_window`/`canvas`/`latex_render`** | **✅ Completada** |
-| **12. Interpolación y despeje analítico en dy** | **Interpolación numérica (Lagrange, Newton, Splines), parseo de puntos discretos y despeje analítico con SymPy en dy** | **✅ Completada (159 tests passing)** |
+| **12. Interpolación y despeje analítico en dy** | **Interpolación numérica (Lagrange, Newton, Splines), parseo de puntos discretos y despeje analítico con SymPy en dy** | **✅ Completada (166 tests passing)** |
 
 ## Entorno verificado
 
@@ -76,7 +76,7 @@ Verificado en disco:
     - ✅ `integrallab/ui/theme.py` — tokens de diseño, QSS y paleta Qt oscura
     - ✅ `integrallab/ui/widgets/` — `glass.py` (GlassCard), `aurora.py` (fondo), `ai_pulse.py` y `chat_panel.py` (futuro panel de IA, sin conectar)
     - ✅ `integrallab/ui/main_window.py` — MainWindow con exportación PDF (`export_to_pdf`, `_export_to_pdf_path`)
-- ✅ `tests/` — **159 pruebas pasando al 100%**
+- ✅ `tests/` — **166 pruebas pasando al 100%**
   - ✅ `tests/test_smoke.py` (3 tests)
   - ✅ `tests/test_parser.py` (4 tests)
   - ✅ `tests/test_operations.py` (4 tests)
@@ -89,7 +89,7 @@ Verificado en disco:
   - ✅ `tests/test_solids.py` (32 tests)
   - ✅ `tests/test_theme.py` (5 tests)
   - ✅ `tests/test_canvas_premium.py` (5 tests)
-  - ✅ `tests/test_ui.py` (34 tests)
+  - ✅ `tests/test_ui.py` (35 tests)
 
 ## Siguiente tarea atómica
 

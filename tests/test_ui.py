@@ -466,3 +466,22 @@ def test_ui_washers_on_vertical_axis_with_inversion(window: MainWindow) -> None:
     # El resultado debe calcular el volumen correcto: pi / 2
     report = window.results_text.toPlainText()
     assert "pi/2" in report or "1.5708" in report
+
+def test_ui_dual_engine_3d_selector(window: MainWindow) -> None:
+    """Verifica que la UI ofrezca selector de motor 3D y conmute entre Three.js y Matplotlib."""
+    assert hasattr(window, "engine_combo")
+    assert window.engine_combo.count() == 2
+    assert "Three.js" in window.engine_combo.itemText(0)
+    assert "Matplotlib" in window.engine_combo.itemText(1)
+
+    assert hasattr(window, "solid_stack")
+    assert window.solid_stack.count() == 2
+    assert hasattr(window, "threejs_viewer")
+
+    # Conmutar a Matplotlib
+    window.engine_combo.setCurrentIndex(1)
+    assert window.solid_stack.currentIndex() == 1
+
+    # Conmutar de vuelta a WebGL
+    window.engine_combo.setCurrentIndex(0)
+    assert window.solid_stack.currentIndex() == 0

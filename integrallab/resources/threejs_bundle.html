@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IntegralLab - Visualizador 3D Three.js</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0B0F19; /* Fondo temático oscuro Glass/Dark */
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #hud-overlay {
+            position: absolute;
+            bottom: 12px;
+            left: 12px;
+            color: rgba(255, 255, 255, 0.65);
+            font-size: 11px;
+            background: rgba(15, 23, 42, 0.75);
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            pointer-events: none;
+            backdrop-filter: blur(8px);
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="hud-overlay">IntegralLab 3D • Click + Arrastre: Rotar • Rueda: Zoom • Click derecho: Trasladar</div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "./js/three.module.min.js",
+            "three/addons/controls/OrbitControls.js": "./js/OrbitControls.js"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // ────────────────────────────────────────────────────────────────────────
+        // 1. Inicialización de Escena, Cámara y Renderizador WebGL
+        // ────────────────────────────────────────────────────────────────────────
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0b0f19);
+
+        const camera = new THREE.PerspectiveCamera(
+            45,
+            window.innerWidth / window.innerHeight,
+            0.1,
+            2000
+        );
+        camera.position.set(10, 8, 12);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.1;
+        container.appendChild(renderer.domElement);
+
+        // ────────────────────────────────────────────────────────────────────────
+        // 2. Controles de Cámara (OrbitControls)
+        // ────────────────────────────────────────────────────────────────────────
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.06;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 1.0;
+        controls.minDistance = 0.5;
+        controls.maxDistance = 500;
+        controls.target.set(0, 0, 0);
+
+        // Detener auto-rotación al interactuar manualmente
+        controls.addEventListener('start', () => {
+            controls.autoRotate = false;
+        });
+
+        // ────────────────────────────────────────────────────────────────────────
+        // 3. Iluminación y Grilla de Referencia
+        // ────────────────────────────────────────────────────────────────────────
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+        scene.add(ambientLight);
+
+        const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.2);
+        dirLight1.position.set(15, 25, 20);
+        scene.add(dirLight1);
+
+        const dirLight2 = new THREE.DirectionalLight(0x5ce1ff, 0.6);
+        dirLight2.position.set(-15, -10, -15);
+        scene.add(dirLight2);
+
+        // Grilla suave en el plano XY o XZ
+        const gridHelper = new THREE.GridHelper(20, 20, 0x334155, 0x1e293b);
+        gridHelper.position.y = -0.01;
+        scene.add(gridHelper);
+
+        // ────────────────────────────────────────────────────────────────────────
+        // 4. Objetos y Mallas de Sólidos
+        // ────────────────────────────────────────────────────────────────────────
+        let solidGroup = new THREE.Group();
+        scene.add(solidGroup);
+
+        /**
+         * Construye un BufferGeometry indexado a partir de una grilla paramétrica (rows x cols).
+         */
+        function buildParametricGeometry(gridData) {
+            if (!gridData || !gridData.x || !gridData.y || !gridData.z) return null;
+            const rows = gridData.rows || 1;
+            const cols = gridData.cols || 1;
+            const x = gridData.x;
+            const y = gridData.y;
+            const z = gridData.z;
+            const totalPoints = x.length;
+
+            if (totalPoints < 4 || rows < 2 || cols < 2) return null;
+
+            const positions = new Float32Array(totalPoints * 3);
+            for (let i = 0; i < totalPoints; i++) {
+                positions[i * 3] = x[i];
+                positions[i * 3 + 1] = y[i];
+                positions[i * 3 + 2] = z[i];
+            }
+
+            const indices = [];
+            for (let i = 0; i < rows - 1; i++) {
+                for (let j = 0; j < cols; j++) {
+                    const nextJ = (j + 1) % cols;
+                    const v00 = i * cols + j;
+                    const v01 = i * cols + nextJ;
+                    const v10 = (i + 1) * cols + j;
+                    const v11 = (i + 1) * cols + nextJ;
+
+                    indices.push(v00, v10, v01);
+                    indices.push(v01, v10, v11);
+                }
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setIndex(indices);
+            geometry.computeVertexNormals();
+            return geometry;
+        }
+
+        /**
+         * Renderiza el sólido con sus mallas y eje a partir del objeto serializado por Python.
+         */
+        function renderSolidMesh(data) {
+            clearCanvas();
+
+            if (!data) return;
+
+            // 1. Superficie Exterior
+            if (data.outer) {
+                const outerGeom = buildParametricGeometry(data.outer);
+                if (outerGeom) {
+                    const outerColor = data.color_outer ? parseInt(data.color_outer.replace('#', '0x')) : 0x5ce1ff;
+                    const outerMat = new THREE.MeshStandardMaterial({
+                        color: outerColor,
+                        roughness: 0.35,
+                        metalness: 0.15,
+                        transparent: true,
+                        opacity: data.alpha !== undefined ? data.alpha : 0.65,
+                        side: THREE.DoubleSide,
+                        depthWrite: true,
+                    });
+                    const outerMesh = new THREE.Mesh(outerGeom, outerMat);
+                    solidGroup.add(outerMesh);
+                }
+            }
+
+            // 2. Superficie Interior (si existe)
+            if (data.inner) {
+                const innerGeom = buildParametricGeometry(data.inner);
+                if (innerGeom) {
+                    const innerColor = data.color_inner ? parseInt(data.color_inner.replace('#', '0x')) : 0xff6b8a;
+                    const innerMat = new THREE.MeshPhysicalMaterial({
+                        color: innerColor,
+                        roughness: 0.25,
+                        metalness: 0.1,
+                        transparent: true,
+                        opacity: Math.min((data.alpha || 0.65) + 0.15, 0.9),
+                        side: THREE.DoubleSide,
+                        depthWrite: true,
+                    });
+                    const innerMesh = new THREE.Mesh(innerGeom, innerMat);
+                    solidGroup.add(innerMesh);
+                }
+            }
+
+            // 3. Eje de Rotación
+            if (data.axis_line) {
+                const axisPoints = [];
+                const ax = data.axis_line.x || [];
+                const ay = data.axis_line.y || [];
+                const az = data.axis_line.z || [];
+                for (let i = 0; i < ax.length; i++) {
+                    axisPoints.push(new THREE.Vector3(ax[i], ay[i], az[i]));
+                }
+                if (axisPoints.length >= 2) {
+                    const lineGeom = new THREE.BufferGeometry().setFromPoints(axisPoints);
+                    const lineMat = new THREE.LineDashedMaterial({
+                        color: 0xffa500,
+                        dashSize: 0.4,
+                        gapSize: 0.2,
+                        linewidth: 2,
+                    });
+                    const axisLine = new THREE.Line(lineGeom, lineMat);
+                    axisLine.computeLineDistances();
+                    solidGroup.add(axisLine);
+                }
+            }
+
+            // Ajustar encuadre de cámara
+            fitCameraToObject(solidGroup);
+            controls.autoRotate = true;
+        }
+
+        function clearCanvas() {
+            while (solidGroup.children.length > 0) {
+                const obj = solidGroup.children[0];
+                if (obj.geometry) obj.geometry.dispose();
+                if (obj.material) {
+                    if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+                    else obj.material.dispose();
+                }
+                solidGroup.remove(obj);
+            }
+        }
+
+        function fitCameraToObject(object) {
+            const box = new THREE.Box3().setFromObject(object);
+            if (box.isEmpty()) return;
+
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z, 2.0);
+
+            controls.target.copy(center);
+            const distance = maxDim * 2.2;
+            camera.position.set(center.x + distance * 0.7, center.y + distance * 0.5, center.z + distance * 0.8);
+            camera.lookAt(center);
+            controls.update();
+        }
+
+        // ────────────────────────────────────────────────────────────────────────
+        // 5. Animación continua y Resize
+        // ────────────────────────────────────────────────────────────────────────
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // ────────────────────────────────────────────────────────────────────────
+        // 6. Exposición de API Global para PySide6 QWebEngineView
+        // ────────────────────────────────────────────────────────────────────────
+        window.IntegralLab3D = {
+            renderSolid: (data) => renderSolidMesh(data),
+            clearCanvas: () => clearCanvas(),
+            setAutoRotate: (enabled) => { controls.autoRotate = Boolean(enabled); },
+            zoom: (factor) => { camera.position.multiplyScalar(factor); controls.update(); },
+            fitCamera: () => fitCameraToObject(solidGroup),
+            getSolidGroup: () => solidGroup,
+            getMeshCount: () => solidGroup.children.length,
+        };
+    </script>
+</body>
+</html>

@@ -416,7 +416,7 @@
 
 ## Sesión 14 — Fase 9: Exportación y Generación de Reportes PDF
 
-**Fecha:** 2026-10-18  
+**Fecha:** 2026-10-18
 **Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0
 
 ### Hecho
@@ -454,7 +454,7 @@
 
 ## Sesión 15 — Fase 11: Refinamiento pedagógico, corrección LaTeX y motor 3D interactivo
 
-**Fecha:** 2026-10-18  
+**Fecha:** 2026-10-18
 **Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0
 
 ### Hecho
@@ -552,7 +552,7 @@
 
 ## Sesión — Auditoría técnica integral y corrección autónoma
 
-**Fecha:** 2026-10-19  
+**Fecha:** 2026-10-19
 **Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0 · SymPy 1.14.0 · Matplotlib 3.11.2 · NumPy 2.5.4 · pytest 9.1.1
 
 ### Diagnóstico inicial
@@ -592,7 +592,7 @@
 
 ## Sesión — Fase 12: Integración en dy (Inversión Analítica) e Interpolación Numérica
 
-**Fecha:** 2026-10-19  
+**Fecha:** 2026-10-19
 **Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0 · SymPy 1.14.0 · Matplotlib 3.11.2 · NumPy 2.5.4 · pytest 9.1.1
 
 ### Paso 1: Integración respecto a y (Inversión analítica con SymPy)
@@ -622,3 +622,27 @@
 - 4 nuevas pruebas en `tests/test_solids.py` para la inversión analítica en dy.
 - 2 nuevas pruebas en `tests/test_ui.py` para el flujo interactivo de interpolación y selección de métodos en ejes verticales.
 - **Suite completa: 159 pruebas pasando al 100% en 24.30s.**
+
+
+---
+
+## Sesión — Auditoría, Corrección e Integración 3D (Three.js / Matplotlib)
+
+**Fecha:** 2026-10-19
+**Entorno:** Windows · C:\Users\merej\OneDrive\Desktop\Calculo · Python 3.14.6 · PySide6 6.12.0 · Three.js r160 · Matplotlib 3.11.2 · NumPy 2.5.4 · pytest 9.1.1
+
+### Hecho
+
+1. **Auditoría técnica del prototipo Three.js**:
+   - Corrección de sintaxis en integrallab/resources/threejs_bundle.html (reemplazo de sintaxis de llaves duplicadas por JavaScript válido).
+   - Implementación de topología de mallas paramétricas indexadas (uildParametricGeometry) con normales computadas y renderizado de eje discontinuo.
+   - Restitución y exportación conjunta de PlotCanvas3D (Matplotlib) y ThreeJSViewer en integrallab/viz/__init__.py.
+2. **Implementación de ThreeJSViewer (integrallab/viz/threejs_wrapper.py)**:
+   - Corrección de layout Qt (QVBoxLayout(self)) para redimensionamiento responsivo dentro de PySide6.
+   - Serializador puro y desacoplado serialize_solid_mesh(SolidMesh3D) -> dict con arrays planos, dimensiones y cálculo del eje.
+   - Interfaz compatible plot_solid_mesh(mesh, ...) y clear_canvas().
+3. **Suite de pruebas**:
+   - Creado 	ests/test_threejs.py (4 pruebas: serialización disco macizo, serialización arandela hueca con eje vertical, manejo de malla inválida e instanciación de widget).
+   - **163 pruebas aprobadas al 100% en 29.33s** sin regresiones.
+4. **Documentación y Arquitectura**:
+   - Actualización de docs/PROJECT_STATUS.md y docs/SESSION_LOG.md.

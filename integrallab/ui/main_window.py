@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QStackedWidget,
     QStatusBar,
     QTabWidget,
     QTextEdit,
@@ -59,6 +60,7 @@ from integrallab.ui.widgets.aurora import AuroraBackground
 from integrallab.ui.widgets.glass import GlassCard
 from integrallab.viz.canvas import PlotCanvas
 from integrallab.viz.canvas3d import PlotCanvas3D
+from integrallab.viz.threejs_wrapper import ThreeJSViewer, WEBENGINE_AVAILABLE
 from integrallab.viz.latex_render import latex_to_base64_html
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 
@@ -261,15 +263,47 @@ class MainWindow(QMainWindow):
         canvas2d_layout.addWidget(self.canvas)
         self.tab_widget.addTab(canvas2d_widget, "Región 2D")
 
-        # Pestaña 2: Sólido 3D  (canvas envuelto con barra de herramientas Matplotlib)
+        # Pestaña 2: Sólido 3D (Visor interactivo con selector de motor WebGL / Matplotlib)
         solid_widget = QWidget(parent=self.tab_widget)
         solid_layout = QVBoxLayout(solid_widget)
         solid_layout.setContentsMargins(0, 0, 0, 0)
         solid_layout.setSpacing(0)
-        self.canvas3d = PlotCanvas3D(parent=solid_widget)
+
+        # Barra superior de selección de motor 3D
+        engine_bar = QWidget(parent=solid_widget)
+        engine_layout = QHBoxLayout(engine_bar)
+        engine_layout.setContentsMargins(8, 4, 8, 4)
+        engine_layout.setSpacing(8)
+
+        engine_label = QLabel("Motor 3D:", parent=engine_bar)
+        self.engine_combo = QComboBox(parent=engine_bar)
+        self.engine_combo.addItems(["WebGL (Three.js)", "Matplotlib (Clásico)"])
+        engine_layout.addWidget(engine_label)
+        engine_layout.addWidget(self.engine_combo)
+        engine_layout.addStretch()
+
+        # Stack de visores
+        self.solid_stack = QStackedWidget(parent=solid_widget)
+
+        # Página 0: ThreeJSViewer (WebGL)
+        self.threejs_viewer = ThreeJSViewer(parent=self.solid_stack)
+        self.solid_stack.addWidget(self.threejs_viewer)
+
+        # Página 1: Matplotlib (Clásico)
+        mpl_container = QWidget(parent=self.solid_stack)
+        mpl_layout = QVBoxLayout(mpl_container)
+        mpl_layout.setContentsMargins(0, 0, 0, 0)
+        mpl_layout.setSpacing(0)
+        self.canvas3d = PlotCanvas3D(parent=mpl_container)
         self.nav_toolbar_3d = NavigationToolbar2QT(self.canvas3d, self)
-        solid_layout.addWidget(self.nav_toolbar_3d)
-        solid_layout.addWidget(self.canvas3d)
+        mpl_layout.addWidget(self.nav_toolbar_3d)
+        mpl_layout.addWidget(self.canvas3d)
+        self.solid_stack.addWidget(mpl_container)
+
+        solid_layout.addWidget(engine_bar)
+        solid_layout.addWidget(self.solid_stack)
+
+        self.engine_combo.currentIndexChanged.connect(self.solid_stack.setCurrentIndex)
         self.tab_widget.addTab(solid_widget, "Sólido 3D")
 
         # Pestaña 3: Desarrollo analítico paso a paso
@@ -529,6 +563,8 @@ class MainWindow(QMainWindow):
 
         if not (a_text and b_text):
             self.canvas3d.clear_canvas()
+            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
+                self.threejs_viewer.clear_canvas()
             self.result_label.setText("Área / Integral: —")
             self.results_text.setPlainText(
                 "Gráfica 2D trazada con éxito.\n"
@@ -628,11 +664,15 @@ class MainWindow(QMainWindow):
             vol_res = calculate_revolution_volume(region, axis, method=chosen_method)
         except Exception as exc:
             self.canvas3d.clear_canvas()
+            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
+                self.threejs_viewer.clear_canvas()
             self._show_parse_error(f"Error en configuración de sólido: {exc}")
             return
 
         if not vol_res.is_success:
             self.canvas3d.clear_canvas()
+            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
+                self.threejs_viewer.clear_canvas()
             err_msg = vol_res.error_message or "Error al calcular el volumen del sólido."
             self._show_parse_error(err_msg)
             self.results_text.setPlainText(f"Error al calcular el sólido de revolución:\n{err_msg}")
@@ -643,8 +683,12 @@ class MainWindow(QMainWindow):
         mesh = generate_solid_mesh(region, axis, num_radial=24, num_axial=18)
         if mesh.is_valid:
             self.canvas3d.plot_solid_mesh(mesh, show_axis=True)
+            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
+                self.threejs_viewer.plot_solid_mesh(mesh, show_axis=True)
         else:
             self.canvas3d.clear_canvas()
+            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
+                self.threejs_viewer.clear_canvas()
 
         # Actualizar etiquetas y reporte pedagógico
         area_str = f"∫ [{a_text}, {b_text}] = {res_2d.exact_plain_text}"
