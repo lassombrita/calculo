@@ -1,16 +1,25 @@
-# Estado del proyecto — IntegralLab
+# Estado del proyecto ? IntegralLab
 
-> Este archivo se actualiza **al terminar cada sesión** de trabajo.
-> Última actualización: **2026-10-19** — Implementación completa de soluciones de auditoría técnica y remediación de robustez: blindaje RCE en parser con lista blanca y sandbox AST, prevención de descomposiciones silenciosas de funciones desconocidas, normalizador es-CO (sen, tg, 0,5, x², π, √, Abs, E), corrección de inversión en dy para curvas decrecientes (4-x²), cálculo asíncrono en UI con QThread (sin congelamiento de interfaz), umbral dinámico de ruido imaginario, empaquetado de resources y archivo de reportes sueltos en docs/archive/. **178 pruebas pasando al 100 %.**
+> Este archivo se actualiza **al terminar cada sesion** de trabajo.
+> Ultima actualizacion: **2026-10-22** ? Sesion 15: Parche Plan A (auditoria ronda 3), correccion del cierre de tuberias en Windows, e implementacion de mejoras pendientes P1-P4. **299 pruebas pasando (1 omitida: exclusiva Linux).**
 
-> **Fases 1–12 completadas**: Selector de método, muestreo adaptativo, lienzo 3D a escala real, exportación PDF, diseño *glass/dark*, interpolación numérica (Lagrange/Newton/Splines naturales), Three.js WebGL offline, arandelas por tramos, motor pedagógico y blindaje de seguridad matemática.
+> **Fases 1-12 completadas**: Selector de metodo, muestreo adaptativo, lienzo 3D a escala real, exportacion PDF, diseno *glass/dark*, interpolacion numerica (Lagrange/Newton/Splines naturales), Three.js WebGL offline, arandelas por tramos, motor pedagogico y blindaje de seguridad matematica.
+
+> **Auditoria Ronda 3 + Parche Plan A (2026-10-22)**:
+> - [x] Parche `calculo-planA-parche-unico.patch` aplicado sobre commit limpio `c2eddc9`.
+> - [x] Correccion de cierre de tuberias `multiprocessing` en Windows: `_listen_loop` usa `conn.poll(0.1)`.
+> - [x] **P1**: `numeric_volume()` en `solids.py`, `numeric_only` en `CalculationRequest`, fallback numerico de 8 s.
+> - [x] **P2**: Proceso de reserva `_spare` en `ProcessCalculationBackend` ? reemplazo instantaneo.
+> - [x] **P3**: `threejs_wrapper._dispatch_render` envuelve `renderSolid` en try/catch JS.
+> - [x] **P4**: Temporizador simbolico 8 s + reintento automatico de backend tras 30 s.
 
 
 ## Fase actual
 
-✅ **Fase 11: Refinamiento pedagógico, corrección LaTeX y motor 3D interactivo** — Completada
-✅ **Fase 12: Interpolación numérica, despeje analítico en dy y Three.js** — Completada
-✅ **Auditoría técnica y seguridad matemática implementadas** — Completada (178 tests passing)
+- Fase 11: Refinamiento pedagogico  COMPLETADA
+- Fase 12: Interpolacion numerica, dy, Three.js  COMPLETADA
+- Auditoria tecnica  COMPLETADA
+- Sesion 15: Plan A + correcciones Windows + P1-P4  COMPLETADA (299/300 tests)
 
 ## Estado por fases
 
@@ -107,4 +116,23 @@ Verificado en disco:
   - [x] Validación de convergencia y finitud (C5): detección de integrales divergentes y límites no finitos.
   - [x] Splines cúbicos naturales estándar (C7): algoritmo tridiagonal O(n) con condiciones de frontera natural.
   - [x] Empaquetado `resources/` en `pyproject.toml` y archivado de reportes en `docs/archive/`.
+- [x] **Auditoría UI/3D (2026-10-22)** — 268 tests al 100 %.
+  - [x] `self._worker` nunca se inicializaba: el primer clic real con límites lanzaba `AttributeError` y el sólido no se calculaba (la cancelación con `Esc` tampoco funcionaba). Corregido; trabajos con identificador y descarte de resultados obsoletos.
+  - [x] Ruta única de cálculo `integrallab/core/pipeline.py` (se eliminó la rama síncrona dependiente de `QT_QPA_PLATFORM`); la malla 3D se entrega antes del volumen simbólico.
+  - [x] Cálculo en proceso aparte (`ui/calc_backend.py`, contexto `spawn`): sin contención del GIL con Qt y cancelación real. Cerrar la ventana durante un cálculo ya no aborta el proceso.
+  - [x] Entradas como `max(1,2)*x`, `log(x,2)` o `0,5*(x+1)` ya no se desvían al lector de puntos; los splines (≥ 5 puntos) funcionan de punta a punta.
+  - [x] Visor Three.js: handshake de WebGL con cambio automático a Matplotlib, payload float32/base64 (~4× menor), tapas del sólido, orden de transparencia, zoom/grilla escalados, render bajo demanda y resolución adaptativa.
+  - [x] Lienzos Matplotlib: sin `tight_layout` en cada dibujo, tooltip y revelado por *blitting*, sin animación 3D oculta.
+  - [x] Reportes compatibles con QTextDocument (tablas) y con `html.escape`; fórmulas pre-renderizadas en el proceso de cálculo.
+- [x] **Tercera auditoría, post-parches (2026-10-22)** — 300 tests al 100 % (Python 3.13 y 3.10/NumPy 1.26).
+  - [x] Casquillos con curvas que se cruzan (x vs x² en [0, 2], eje Y): −8π/3 → 3π. Tramos por cruce y altura con el signo de cada tramo.
+  - [x] Orientación f/g decidida por mediana de 9 muestras, no por el punto medio (sin(x)/x en [-1, 1]: −5,638 → +5,638).
+  - [x] Cruces hallados numéricamente cuando `solve` no tiene algoritmo (Max/Min): −0,7016 → 0,7728. Ningún volumen negativo se informa como éxito.
+  - [x] Dominio real: sqrt(x) en [-1, 1], asin(x) en [0, 2] o log(x) en [-1, 1] dan un error claro (antes «2/3 + 2*I/3» y V = 0). Áreas complejas rechazadas.
+  - [x] Desbordamiento de float (exp(1000·x) en [0, 1] ≈ 1,97e431) ya no se informa como «no converge».
+  - [x] Integrales no elementales con valor numérico (x**x ≈ 2,8339; floor(x) sin error interno). Símbolos libres (`a*x**2`) con mensaje claro.
+  - [x] Malla de visualización finita en singularidades de borde o evitables (log(x), sin(x)/x); el visor se limpia si no puede dibujar; payload float32 sin desbordes (> 1e37).
+  - [x] Vista 2D ajustada a [a, b]; formato numérico con notación científica (1.1351e+87, 1.0472e-36).
+  - [x] Casquillos con cruces y spline: desarrollo por tramos sin re-integrar x·|f − g| (spline de 5 puntos vs 0,2 en el eje Y: 110 s → 2,6 s).
+  - [x] Proceso de cálculo: sale en ~5 ms si la interfaz muere (vigía del padre + `PR_SET_PDEATHSIG` en Linux); reciclado tras 60 trabajos; la tubería la cierra solo su hilo oyente.
 - [ ] **Fase 13 (propuesta):** Superficie de área de revolución o exportación de informes HTML interactivos.

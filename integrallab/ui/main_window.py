@@ -5,14 +5,32 @@ Orquestar la interfaz gráfica educativa conectando la entrada matemática del u
 con el dominio de cálculo simbólico y sólidos de revolución (integrallab.core)
 y los lienzos de visualización 2D y 3D (integrallab.viz).
 Esta capa no importa SymPy directamente; toda la lógica matemática pasa por el dominio.
+
+Modelo de concurrencia:
+- Todo cálculo pasa por ``integrallab.core.pipeline.run_calculation`` (una sola ruta; antes
+  había una copia síncrona para los tests y otra en el worker).
+- Cada cálculo es un "trabajo" con un identificador creciente. Los resultados de trabajos
+  cancelados o reemplazados se descartan, así que nunca se mezclan en pantalla.
+- El trabajo corre en un proceso aparte (``ui/calc_backend.py``): SymPy no compite por el GIL
+  con la interfaz y cancelar es inmediato. Si no se puede crear el proceso, se usa un hilo
+  *daemon*. Los resultados llegan por señales Qt; la malla 3D antes que el volumen simbólico.
+- ``_synchronous = True`` ejecuta el mismo trabajo en el hilo principal (pruebas).
 """
 
 from __future__ import annotations
 
-import os
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+import html
+import logging
+import math
+import threading
+from dataclasses import dataclass, field
+from typing import Any
+
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -35,13 +53,19 @@ from integrallab.core.interpolation import (
     interpolate_cubic_spline,
     interpolate_lagrange,
 )
-from integrallab.core.operations import integrate_definite
 from integrallab.core.parser import (
     ExpressionParseError,
+    ParsedExpression,
     is_points_input,
     parse_math_expression,
     parse_numeric_or_symbolic,
     parse_points,
+)
+from integrallab.core.pipeline import (
+    CalculationCancelled,
+    CalculationOutput,
+    CalculationRequest,
+    run_calculation,
 )
 from integrallab.core.sampling import robust_y_window, sample_expression
 from integrallab.core.solids import (
@@ -49,116 +73,147 @@ from integrallab.core.solids import (
     MethodRecommendation,
     Region2D,
     RevolutionAxis,
+    SolidMesh3D,
     SolidMethod,
     VolumeResult,
-    calculate_revolution_volume,
     can_invert_for_method,
-    generate_solid_mesh,
+    inversion_is_cheap,
     is_method_compatible,
-    recommend_method,
 )
+from integrallab.ui.calc_backend import ProcessCalculationBackend
 from integrallab.ui.theme import Palette, build_palette, build_stylesheet
 from integrallab.ui.widgets.aurora import AuroraBackground
 from integrallab.ui.widgets.glass import GlassCard
 from integrallab.viz.canvas import PlotCanvas
 from integrallab.viz.canvas3d import PlotCanvas3D
-from integrallab.viz.threejs_wrapper import ThreeJSViewer, WEBENGINE_AVAILABLE
-from integrallab.viz.latex_render import latex_to_base64_html
+from integrallab.viz.threejs_wrapper import ThreeJSViewer, WEBENGINE_AVAILABLE  # noqa: F401
+from integrallab.viz.report_assets import (
+    FormulaSpec,
+    final_formula,
+    render_formula,
+    setup_formula,
+    step_formula,
+    volume_formula,
+)
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+
+__all__ = ["MainWindow", "CalculationWorker", "CalculationOutput"]
+
+logger = logging.getLogger(__name__)
 
 # Rango de visualización 2D por defecto
 _DEFAULT_X_MIN: float = -10.0
 _DEFAULT_X_MAX: float = 10.0
 _DEFAULT_POINTS: int = 400
 
+_PLOT_BUTTON_TEXT = "⚙  Generar Gráficas y Sólido"
+_BUSY_BUTTON_TEXT = "⏳ Calculando…  (Esc cancela)"
 
 
-from dataclasses import dataclass
+def _fmt(value: float, digits: int = 4) -> str:
+    """Número legible: fijo en rangos normales, científico si es enorme o diminuto.
 
-@dataclass
-class CalculationOutput:
-    """Contenedor de resultados del cálculo en segundo plano."""
-    res_2d: Any
-    region: Region2D
-    rec: MethodRecommendation
-    vol_res: VolumeResult
-    mesh: Any
-    axis: RevolutionAxis
-    chosen_method: SolidMethod | None
+    Con ``:.4f`` un volumen de 1,1e87 se imprimía con 88 cifras y 3,3e-37 salía «0.0000».
+    """
+    if value == 0 or 1e-3 <= abs(value) < 1e7:
+        return f"{value:.{digits}f}"
+    return f"{value:.{digits}e}"
 
 
-class CalculationWorker(QThread):
-    """Worker en hilo secundario para cálculos simbólicos y de mallas 3D sin congelar la UI."""
-    calculation_finished = Signal(object)
-    calculation_error = Signal(str)
+def _esc(value: object) -> str:
+    """Escapa texto dinámico antes de incrustarlo en HTML (QTextEdit.setHtml)."""
+    return html.escape(str(value)).replace("\n", "<br>")
 
-    def __init__(
-        self,
-        raw_f: str,
-        raw_g: str,
-        parsed_f: object,
-        parsed_g: object | None,
-        a_text: str,
-        b_text: str,
-        axis: RevolutionAxis,
-        chosen_method: SolidMethod | None,
-        parent: QObject | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.raw_f = raw_f
-        self.raw_g = raw_g
-        self.parsed_f = parsed_f
-        self.parsed_g = parsed_g
-        self.a_text = a_text
-        self.b_text = b_text
-        self.axis = axis
-        self.chosen_method = chosen_method
-        self.is_cancelled = False
+
+class _CalculationSignals(QObject):
+    """Señales de los trabajos de cálculo. Viven en el hilo principal (conexión en cola)."""
+
+    mesh_ready = Signal(int, object)   # (id del trabajo, SolidMesh3D)
+    assets_ready = Signal(int, object)  # (id del trabajo, {FormulaSpec: html}) fórmulas ya renderizadas
+    finished = Signal(int, object)     # (id del trabajo, CalculationOutput)
+    failed = Signal(int, str)          # (id del trabajo, mensaje)
+
+
+class CalculationWorker:
+    """Ejecuta ``run_calculation`` fuera del hilo de la interfaz.
+
+    Usa un hilo *daemon* de Python en lugar de un ``QThread`` hijo de la ventana: cerrar la
+    ventana con un ``QThread`` aún en marcha abortaba el proceso («QThread: Destroyed while
+    thread is still running»), y un cálculo de SymPy no se puede interrumpir a mitad. El hilo
+    daemon no impide salir. La cancelación es cooperativa (se consulta entre pasos) y, además,
+    la ventana descarta cualquier resultado de un trabajo que ya no es el actual.
+    """
+
+    def __init__(self, job_id: int, request: CalculationRequest, signals: _CalculationSignals) -> None:
+        self.job_id = job_id
+        self._request = request
+        self._signals = signals
+        self._cancel = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self.run, name=f"integrallab-calculo-{self.job_id}", daemon=True
+        )
+        self._thread.start()
 
     def cancel(self) -> None:
-        self.is_cancelled = True
+        self._cancel.set()
+
+    def is_cancelled(self) -> bool:
+        return self._cancel.is_set()
+
+    def isRunning(self) -> bool:  # noqa: N802 - mismo nombre que QThread por compatibilidad
+        return self._thread is not None and self._thread.is_alive()
 
     def run(self) -> None:
         try:
-            if self.is_cancelled:
-                return
-
-            if self.parsed_g is not None:
-                diff_parsed = parse_math_expression(f"({self.raw_f}) - ({self.raw_g})")
-                res_2d = integrate_definite(diff_parsed, self.a_text, self.b_text)
-            else:
-                res_2d = integrate_definite(self.parsed_f, self.a_text, self.b_text)  # type: ignore[arg-type]
-
-            if self.is_cancelled:
-                return
-
-            region = Region2D(
-                f_expr=self.raw_f,
-                g_expr=self.raw_g if self.raw_g else None,
-                a=self.a_text,
-                b=self.b_text,
-                variable="x",
+            output = run_calculation(
+                self._request, on_mesh=self._emit_mesh, is_cancelled=self._cancel.is_set
             )
-            rec = recommend_method(region, self.axis)
-            vol_res = calculate_revolution_volume(region, self.axis, method=self.chosen_method)
+        except CalculationCancelled:
+            return
+        except Exception as exc:  # noqa: BLE001 - se informa a la interfaz, no se silencia
+            logger.exception("Fallo inesperado en el cálculo %s", self.job_id)
+            self._emit(self._signals.failed, str(exc) or exc.__class__.__name__)
+            return
+        if not self._cancel.is_set():
+            self._emit(self._signals.finished, output)
 
-            if self.is_cancelled:
-                return
+    def _emit_mesh(self, mesh: SolidMesh3D) -> None:
+        if not self._cancel.is_set():
+            self._emit(self._signals.mesh_ready, mesh)
 
-            mesh = generate_solid_mesh(region, self.axis, num_radial=24, num_axial=18)
+    def _emit(self, signal: Any, payload: object) -> None:
+        try:
+            signal.emit(self.job_id, payload)
+        except RuntimeError:
+            pass  # la ventana ya se destruyó: no hay a quién avisar
 
-            output = CalculationOutput(
-                res_2d=res_2d,
-                region=region,
-                rec=rec,
-                vol_res=vol_res,
-                mesh=mesh,
-                axis=self.axis,
-                chosen_method=self.chosen_method,
-            )
-            self.calculation_finished.emit(output)
-        except Exception as exc:
-            self.calculation_error.emit(str(exc))
+
+@dataclass
+class _JobContext:
+    """Datos de la petición en curso que se necesitan al pintar sus resultados."""
+
+    job_id: int
+    key: tuple
+    a_text: str
+    b_text: str
+    a_val: float
+    b_val: float
+    parsed_f: ParsedExpression
+    parsed_g: ParsedExpression | None
+    axis: RevolutionAxis
+    chosen_method: SolidMethod | None
+    is_interpolated: bool
+    interp_method_name: str
+    show_dialogs: bool
+    worker: CalculationWorker | None = None
+    in_process: bool = False
+    mesh_shown: bool = False
+    request: CalculationRequest | None = None
+    numeric_only: bool = False
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class MainWindow(QMainWindow):
@@ -183,6 +238,30 @@ class MainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None) -> None:
         """Construye la ventana principal con todos sus widgets y layouts."""
         super().__init__(parent)
+        # Estado de los trabajos de cálculo. Antes ``self._worker`` nunca se inicializaba: el
+        # primer clic real (con límites) lanzaba AttributeError y el sólido no se calculaba.
+        self._signals = _CalculationSignals(self)
+        self._signals.mesh_ready.connect(self._on_job_mesh)
+        self._signals.assets_ready.connect(self._on_job_assets)
+        self._signals.finished.connect(self._on_job_finished)
+        self._signals.failed.connect(self._on_job_failed)
+        self._job_seq = 0
+        self._job: _JobContext | None = None
+        self._worker: CalculationWorker | None = None
+        # True ejecuta el trabajo en el hilo principal (pruebas). Ya NO depende de
+        # QT_QPA_PLATFORM ni de _show_dialogs: antes cambiar el método en el combo forzaba
+        # el cálculo síncrono y congelaba la ventana varios segundos.
+        self._synchronous = False
+        self._backend: ProcessCalculationBackend | None = None
+        self._backend_failed_at: float | None = None
+        self._symbolic_timer = QTimer(self)
+        self._symbolic_timer.setSingleShot(True)
+        self._symbolic_timer.setInterval(8000)
+        self._symbolic_timer.timeout.connect(self._on_symbolic_timeout)
+        # Cuando False, _show_parse_error no abre diálogo modal (vital para tests headless)
+        self._show_dialogs: bool = True
+        self._invert_cache: dict[tuple, bool] = {}
+        self._prerendered: dict[FormulaSpec, str] = {}
         # Tema ANTES de crear widgets: la barra de Matplotlib tiñe sus iconos con la paleta.
         self.setPalette(build_palette())
         self.setStyleSheet(build_stylesheet())
@@ -304,7 +383,7 @@ class MainWindow(QMainWindow):
         solid_layout.addLayout(method_row)
 
         # Botón principal
-        self.plot_button = QPushButton("⚙  Generar Gráficas y Sólido")
+        self.plot_button = QPushButton(_PLOT_BUTTON_TEXT)
         self.plot_button.setObjectName("PrimaryButton")
         self.plot_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.plot_button.clicked.connect(self._on_plot_clicked)
@@ -373,11 +452,25 @@ class MainWindow(QMainWindow):
         engine_layout.addWidget(self.engine_combo)
         engine_layout.addStretch()
 
+        # Controles de vista que faltaban: no había forma de detener el giro ni de
+        # recuperar el encuadre tras hacer zoom o paneo.
+        self.auto_rotate_check = QCheckBox("Auto-rotación", parent=engine_bar)
+        self.auto_rotate_check.setChecked(True)
+        self.auto_rotate_check.setToolTip("Gira el sólido automáticamente al generarlo.")
+        self.auto_rotate_check.toggled.connect(self._on_auto_rotate_toggled)
+        engine_layout.addWidget(self.auto_rotate_check)
+        self.fit_view_button = QPushButton("⟲ Reencuadrar", parent=engine_bar)
+        self.fit_view_button.setToolTip("Vuelve a centrar la cámara en el sólido (también: doble clic en el visor WebGL).")
+        self.fit_view_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fit_view_button.clicked.connect(self._on_fit_view_clicked)
+        engine_layout.addWidget(self.fit_view_button)
+
         # Stack de visores
         self.solid_stack = QStackedWidget(parent=solid_widget)
 
         # Página 0: ThreeJSViewer (WebGL)
         self.threejs_viewer = ThreeJSViewer(parent=self.solid_stack)
+        self.threejs_viewer.backend_status_changed.connect(self._on_webgl_status)
         self.solid_stack.addWidget(self.threejs_viewer)
 
         # Página 1: Matplotlib (Clásico)
@@ -394,7 +487,7 @@ class MainWindow(QMainWindow):
         solid_layout.addWidget(engine_bar)
         solid_layout.addWidget(self.solid_stack)
 
-        self.engine_combo.currentIndexChanged.connect(self.solid_stack.setCurrentIndex)
+        self.engine_combo.currentIndexChanged.connect(self._on_engine_changed)
         self.tab_widget.addTab(solid_widget, "Sólido 3D")
 
         # Pestaña 3: Desarrollo analítico paso a paso
@@ -437,11 +530,13 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Listo. Escribe una función y pulsa Generar Gráficas y Sólido.")
 
-        # Cuando False, _show_parse_error no abre diálogo modal (vital para tests headless)
-        self._show_dialogs: bool = True
-
         # Estado inicial del selector de método según el eje por defecto.
         self._update_method_availability()
+
+        # Arranca el proceso de cálculo en segundo plano para que el primer cálculo no espere
+        # la importación de SymPy (no se arranca en modo síncrono / pruebas).
+        QTimer.singleShot(600, self._prewarm_backend)
+
 
     # ── Manejo de controles ────────────────────────────────────────────────
 
@@ -452,6 +547,25 @@ class MainWindow(QMainWindow):
         if not is_custom:
             self.axis_value_input.setText("0")
         self._update_method_availability()
+
+    def _can_invert_cached(self, region: Region2D, probe: RevolutionAxis, method: SolidMethod) -> bool:
+        """``can_invert_for_method`` memorizado: invierte con SymPy en el hilo de la interfaz.
+
+        Cada cambio de eje repetía la inversión (50–220 ms por cambio en las pruebas); con la
+        caché solo se paga la primera vez para cada región.
+        """
+        key = (str(region.f_expr), str(region.g_expr), str(region.a), str(region.b),
+               probe.orientation.value, method.value)
+        if key not in self._invert_cache:
+            if len(self._invert_cache) > 256:
+                self._invert_cache.clear()
+            if not inversion_is_cheap(region):
+                # SymPy.solve en el hilo de Qt costaba hasta 1,2 s por cambio de eje; si no es un
+                # polinomio de grado bajo se habilita el método y el trabajo informa si no se puede.
+                self._invert_cache[key] = True
+            else:
+                self._invert_cache[key] = can_invert_for_method(region, probe, method)
+        return self._invert_cache[key]
 
     def _update_method_availability(self) -> None:
         """Deshabilita en el combo los métodos que no aplican al eje elegido.
@@ -471,24 +585,24 @@ class MainWindow(QMainWindow):
         lim_b = self.limit_b_input.text().strip()
 
         probe_region = None
-        if f_text and lim_a and lim_b:
-            try:
-                probe_region = Region2D(
-                    f_expr=f_text,
-                    g_expr=self.g_expression_input.text().strip() or None,
-                    a=lim_a,
-                    b=lim_b,
-                    variable="x",
-                )
-            except Exception:
-                probe_region = None
+        if f_text and lim_a and lim_b and not is_points_input(f_text):
+            probe_region = Region2D(
+                f_expr=f_text,
+                g_expr=self.g_expression_input.text().strip() or None,
+                a=lim_a,
+                b=lim_b,
+                variable="x",
+            )
 
         for combo_index, method in self._METHOD_BY_INDEX.items():
             item = model.item(combo_index)  # type: ignore[attr-defined]
             direct = is_method_compatible(method, probe)
             invertible = False
             if not direct and probe_region is not None:
-                invertible = can_invert_for_method(probe_region, probe, method)
+                try:
+                    invertible = self._can_invert_cached(probe_region, probe, method)
+                except Exception:  # noqa: BLE001 - región incompleta mientras se escribe
+                    invertible = False
 
             applicable = direct or invertible
             item.setEnabled(applicable)
@@ -517,7 +631,11 @@ class MainWindow(QMainWindow):
         self._refresh_if_ready()
 
     def _refresh_if_ready(self) -> None:
-        """Recalcula si f(x) y ambos límites están completos; sin diálogos modales."""
+        """Recalcula si f(x) y ambos límites están completos; sin diálogos modales.
+
+        El recálculo es asíncrono como cualquier otro (antes, al desactivar los diálogos
+        se activaba sin querer la rama síncrona y la ventana se congelaba).
+        """
         if not (
             self.expression_input.text().strip()
             and self.limit_a_input.text().strip()
@@ -530,6 +648,33 @@ class MainWindow(QMainWindow):
             self._on_plot_clicked()
         finally:
             self._show_dialogs = previous
+
+    def _on_engine_changed(self, index: int) -> None:
+        """Cambia de visor 3D. El lienzo que queda oculto deja de dibujar y de animarse."""
+        self.solid_stack.setCurrentIndex(index)
+
+    def _on_webgl_status(self, ok: bool, reason: str) -> None:
+        """Si WebGL no está disponible, cambia a Matplotlib en lugar de dejar la vista vacía."""
+        item = self.engine_combo.model().item(0)  # type: ignore[attr-defined]
+        if ok:
+            item.setEnabled(True)
+            item.setToolTip("")
+            return
+        item.setEnabled(False)
+        item.setToolTip(f"WebGL no disponible en este equipo: {reason}")
+        if self.engine_combo.currentIndex() == 0:
+            self.engine_combo.setCurrentIndex(1)
+        self.status_bar.showMessage(
+            "ℹ WebGL no está disponible en este equipo; se usa el motor Matplotlib.", 10000
+        )
+
+    def _on_auto_rotate_toggled(self, enabled: bool) -> None:
+        self.threejs_viewer.set_auto_rotate(enabled)
+        self.canvas3d.set_auto_rotate(enabled)
+
+    def _on_fit_view_clicked(self) -> None:
+        self.threejs_viewer.fit_camera()
+        self.canvas3d.reset_view()
 
     def _get_selected_axis(self) -> RevolutionAxis:
         """Determina el RevolutionAxis configurado en la UI."""
@@ -553,6 +698,18 @@ class MainWindow(QMainWindow):
         """Determina el método de cálculo de sólidos seleccionado."""
         return self._METHOD_BY_INDEX.get(self.method_combo.currentIndex())
 
+    def _plot_window(self) -> tuple[float, float]:
+        """Rango x de la gráfica 2D: [-10, 10] o, con límites válidos, [a, b] con margen."""
+        a = self._parse_limit_to_float(self.limit_a_input.text().strip()) if self.limit_a_input.text().strip() else None
+        b = self._parse_limit_to_float(self.limit_b_input.text().strip()) if self.limit_b_input.text().strip() else None
+        if a is None or b is None or not (math.isfinite(a) and math.isfinite(b)) or a >= b:
+            return _DEFAULT_X_MIN, _DEFAULT_X_MAX
+        span = b - a
+        lo, hi = a - 0.5 * span, b + 0.5 * span
+        if lo > _DEFAULT_X_MIN and hi < _DEFAULT_X_MAX and span > 0.5:
+            return _DEFAULT_X_MIN, _DEFAULT_X_MAX  # la región ya se ve bien en la vista estándar
+        return lo, hi
+
     def _parse_limit_to_float(self, limit_text: str) -> float | None:
         """Convierte una cadena de límite (número o expresión como 'pi') a float de forma segura."""
         try:
@@ -563,22 +720,123 @@ class MainWindow(QMainWindow):
                 return float(sym_val.evalf())
             except Exception:
                 return None
-        return None
+
+    # ── Estado de la interfaz ──────────────────────────────────────────────
+
+    def _set_busy(self, busy: bool) -> None:
+        """Estado visual del botón principal mientras hay un trabajo en curso."""
+        self.plot_button.setEnabled(not busy)
+        self.plot_button.setText(_BUSY_BUTTON_TEXT if busy else _PLOT_BUTTON_TEXT)
+
+    def _clear_3d(self) -> None:
+        self.canvas3d.clear_canvas()
+        self.threejs_viewer.clear_canvas()
+
+    def _reset_outputs(self, message: str, label: str | None = None) -> None:
+        """Deja la interfaz coherente tras un error o una cancelación.
+
+        Antes, si un cálculo fallaba después de otro exitoso, quedaban a la vista el sólido,
+        el desarrollo y el botón «Exportar a PDF» del caso anterior.
+        """
+        self._clear_3d()
+        if label is not None:
+            self.result_label.setText(label)
+        self.results_text.setPlainText(message)
+        self.steps_text.setPlainText(message)
+        self.export_pdf_button.setEnabled(False)
+
+    def _prewarm_backend(self) -> None:
+        if not self._synchronous:
+            self._get_backend()
+
+    @property
+    def _backend_failed(self) -> bool:
+        return self._backend_failed_at is not None
+
+    @_backend_failed.setter
+    def _backend_failed(self, value: bool) -> None:
+        import time
+        self._backend_failed_at = time.time() if value else None
+
+    def _get_backend(self) -> ProcessCalculationBackend | None:
+        """Proceso de calculo (creado una vez). None en modo sincrono o si no se pudo crear."""
+        if self._synchronous:
+            return None
+        if self._backend_failed_at is not None:
+            import time
+            if time.time() - self._backend_failed_at < 30.0:
+                return None
+            self._backend_failed_at = None
+        if self._backend is None:
+            try:
+                self._backend = ProcessCalculationBackend(self._signals)
+            except Exception:  # noqa: BLE001 - p. ej. entorno sin multiprocessing
+                import time
+                logger.exception("No se pudo crear el proceso de calculo; se usara un hilo")
+                self._backend_failed_at = time.time()
+                return None
+        return self._backend
+
+    def _on_symbolic_timeout(self) -> None:
+        """Vence el tiempo limite simbolico (8s): conmuta a calculo numerico con mpmath."""
+        if self._job is None or self._job.numeric_only or self._job.request is None:
+            return
+        self._job.numeric_only = True
+        num_req = replace(self._job.request, numeric_only=True)
+        self._job.request = num_req
+        if self._job.in_process and self._backend is not None:
+            self._backend.submit(self._job.job_id, num_req)
+        elif self._worker is not None:
+            self._worker.cancel()
+            worker = CalculationWorker(self._job.job_id, num_req, self._signals)
+            self._job.worker = worker
+            self._worker = worker
+            worker.start()
+        self.status_bar.showMessage("SymPy no termino en 8 s: mostrando el valor numerico...")
+
+
+    def _job_running(self) -> bool:
+        if self._job is None:
+            return False
+        if self._job.in_process:
+            return self._backend is not None and self._backend.is_busy
+        return self._worker is not None and self._worker.isRunning()
+
+    def _cancel_active_job(self) -> bool:
+        """Cancela y descarta el trabajo en curso. Devuelve True si había uno."""
+        self._symbolic_timer.stop()
+        job, self._job = self._job, None
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.cancel()
+        if job is not None and job.in_process and self._backend is not None:
+            self._backend.cancel()  # termina el proceso: la cancelación es real
+        self._set_busy(False)
+        return job is not None
+
+    def _input_error(self, message: str) -> None:
+        """Error de entrada: se abandona cualquier cálculo anterior (sus resultados ya no aplican)."""
+        if self._cancel_active_job():
+            self._reset_outputs("Cálculo anterior descartado: corrija la entrada y vuelva a generar.")
+        self._show_parse_error(message)
+
+    def _region_error(self, message: str, label: str) -> None:
+        """Error en límites o eje: la gráfica 2D ya muestra la nueva f(x), así que el sólido,
+        los reportes y la exportación del caso anterior se retiran para no mezclar casos."""
+        self._cancel_active_job()
+        self._reset_outputs(message, label=label)
+        self._show_parse_error(message)
 
     # ── Orquestador principal ──────────────────────────────────────────────
 
     def _on_plot_clicked(self) -> None:
         """Slot principal que reacciona a 'Generar Gráficas y Sólido'.
 
-        Flujo desacoplado:
-        1. Leer y validar sintaxis de f(x) y opcionalmente g(x).
+        Flujo:
+        1. Leer y validar f(x) (o puntos discretos → interpolación) y opcionalmente g(x).
         2. Graficar en 2D en el rango [-10, 10].
-        3. Si se definen límites a y b:
-           - Calcular el área 2D y sombrear la región entre f(x) y g(x) (o y=0).
-           - Construir Region2D y RevolutionAxis.
-           - Solicitar al dominio recomendación pedagógica y cálculo de volumen.
-           - Generar la malla 3D numérica y renderizarla en PlotCanvas3D.
-           - Publicar el desarrollo analítico y justificación en results_text.
+        3. Si hay límites a y b: validar límites y eje, y lanzar el trabajo de cálculo
+           (área, malla 3D, recomendación y volumen) fuera del hilo de la interfaz.
         """
         raw_f = self.expression_input.text().strip()
         raw_g = self.g_expression_input.text().strip()
@@ -587,74 +845,87 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("⚠ El campo de función f(x) está vacío.")
             return
 
-        # 0. Soporte para entrada de puntos discretos (Interpolación numérica)
+        # 0. Puntos discretos → interpolación numérica
         is_interpolated = False
         interp_method_name = ""
-        if is_points_input(raw_f):
-            try:
+        try:
+            if is_points_input(raw_f):
                 pts = parse_points(raw_f)
                 interp_res = interpolate_lagrange(pts) if len(pts) <= 4 else interpolate_cubic_spline(pts)
                 if not interp_res.is_success:
-                    self._show_parse_error(interp_res.error_message or "Error en interpolación numérica.")
+                    self._input_error(interp_res.error_message or "Error en interpolación numérica.")
                     return
-                raw_f = interp_res.polynomial_plain_text
+                # Se usa la expresión simbólica directamente: un spline (Piecewise) no se puede
+                # volver a parsear desde texto, así que con 5 o más puntos el flujo fallaba siempre.
+                parsed_f = interp_res.to_parsed_expression(raw_f)
                 is_interpolated = True
                 interp_method_name = interp_res.method.value.capitalize()
+                f_label = (
+                    f"f(x) = spline cúbico natural ({len(pts)} puntos)"
+                    if len(pts) > 4 else f"f(x) = {parsed_f.plain_text}"
+                )
                 if not self.limit_a_input.text().strip():
                     self.limit_a_input.setText(str(pts[0][0]))
                 if not self.limit_b_input.text().strip():
                     self.limit_b_input.setText(str(pts[-1][0]))
-            except ExpressionParseError as exc:
-                self._show_parse_error(str(exc))
-                return
-
-        # 1. Parseo y validación de expresiones matemáticas
-        try:
-            parsed_f = parse_math_expression(raw_f)
+            else:
+                parsed_f = parse_math_expression(raw_f)
+                f_label = f"f(x) = {parsed_f.plain_text}"
             parsed_g = parse_math_expression(raw_g) if raw_g else None
         except ExpressionParseError as exc:
-            self._show_parse_error(str(exc))
+            self._input_error(str(exc))
             return
 
-        # 2. Muestreo 2D general para el lienzo
+        extra = sorted({*parsed_f.variables, *(parsed_g.variables if parsed_g else [])} - {"x"})
+        if extra:
+            self._input_error(
+                f"La expresión usa símbolos sin valor: {', '.join(extra)}. Solo se admite la "
+                "variable x (sustituya las constantes por números)."
+            )
+            return
+
+        # 2. Muestreo 2D: centrado en [a, b] si hay límites (antes siempre [-10, 10], así que la
+        # región sombreada en [20, 30] quedaba sin curva y en [-0,001; 0,001] era invisible).
+        x_min, x_max = self._plot_window()
         curve_f = sample_expression(
             parsed_f,
-            x_min=_DEFAULT_X_MIN,
-            x_max=_DEFAULT_X_MAX,
+            x_min=x_min,
+            x_max=x_max,
             num_points=_DEFAULT_POINTS,
-            label=f"f(x) = {parsed_f.plain_text}",
+            label=f_label,
             adaptive=True,
         )
         if not curve_f.is_valid:
-            self._show_parse_error(curve_f.error_message or "Error al evaluar f(x).")
+            self._input_error(curve_f.error_message or "Error al evaluar f(x).")
             return
 
         if parsed_g is not None:
             curve_g = sample_expression(
                 parsed_g,
-                x_min=_DEFAULT_X_MIN,
-                x_max=_DEFAULT_X_MAX,
+                x_min=x_min,
+                x_max=x_max,
                 num_points=_DEFAULT_POINTS,
                 label=f"g(x) = {parsed_g.plain_text}",
                 adaptive=True,
             )
             if not curve_g.is_valid:
-                self._show_parse_error(curve_g.error_message or "Error al evaluar g(x).")
+                self._input_error(curve_g.error_message or "Error al evaluar g(x).")
                 return
             self.canvas.plot_curves([curve_f, curve_g], clear=True)
             self.canvas.set_y_window(robust_y_window([curve_f, curve_g]))
         else:
             self.canvas.plot_curve(curve_f, clear=True)
             self.canvas.set_y_window(robust_y_window([curve_f]))
+        self.nav_toolbar_2d.update()  # «Inicio» vuelve a la vista de ESTA función, no de la anterior
 
         # 3. Procesar límites de integración y sólido 3D
         a_text = self.limit_a_input.text().strip()
         b_text = self.limit_b_input.text().strip()
 
         if not (a_text and b_text):
-            self.canvas3d.clear_canvas()
-            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
-                self.threejs_viewer.clear_canvas()
+            self._cancel_active_job()
+            self._clear_3d()
+            self.export_pdf_button.setEnabled(False)
             self.result_label.setText("Área / Integral: —")
             self.results_text.setPlainText(
                 "Gráfica 2D trazada con éxito.\n"
@@ -664,7 +935,7 @@ class MainWindow(QMainWindow):
                 "Gráfica 2D trazada con éxito.\n"
                 "Para calcular la integral y ver el desarrollo analítico paso a paso, ingresa los límites 'a' y 'b'."
             )
-            self.status_bar.showMessage(f"✔ Graficada: f(x) = {parsed_f.plain_text}")
+            self.status_bar.showMessage(f"✔ Graficada: {f_label}")
             self.canvas.play_reveal()
             return
 
@@ -678,210 +949,173 @@ class MainWindow(QMainWindow):
         self,
         raw_f: str,
         raw_g: str,
-        parsed_f: object,
-        parsed_g: object | None,
+        parsed_f: ParsedExpression,
+        parsed_g: ParsedExpression | None,
         a_text: str,
         b_text: str,
         is_interpolated: bool = False,
         interp_method_name: str = "",
     ) -> None:
-        """Calcula el área 2D, sombreado, volumen 3D y renderizado del sólido."""
+        """Valida límites y eje y lanza el trabajo de cálculo (área, malla y volumen)."""
         a_val = self._parse_limit_to_float(a_text)
         b_val = self._parse_limit_to_float(b_text)
 
         if a_val is None or b_val is None:
-            self.result_label.setText("Área / Integral: Error en límites")
-            self._show_parse_error(
-                "Los límites de integración deben ser números o constantes válidas (ej. 0, 3, pi)."
+            self._region_error(
+                "Los límites de integración deben ser números o constantes válidas (ej. 0, 3, pi).",
+                "Área / Integral: Error en límites",
             )
             return
 
         if a_val >= b_val:
-            self.result_label.setText("Área / Integral: Error en límites (a >= b)")
-            self._show_parse_error(
-                f"El límite inferior 'a' ({a_val}) debe ser menor que el límite superior 'b' ({b_val})."
+            self._region_error(
+                f"El límite inferior 'a' ({a_val}) debe ser menor que el límite superior 'b' ({b_val}).",
+                "Área / Integral: Error en límites (a >= b)",
             )
             return
 
         try:
             axis = self._get_selected_axis()
             chosen_method = self._get_selected_method()
-        except Exception as exc:
-            self.canvas3d.clear_canvas()
-            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
-                self.threejs_viewer.clear_canvas()
-            self._show_parse_error(f"Error en configuración de sólido: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            self._region_error(f"Error en configuración de sólido: {exc}", "Área / Integral: —")
             return
 
-        is_testing = (not getattr(self, "_show_dialogs", True)) or os.environ.get("QT_QPA_PLATFORM") == "offscreen"
+        key = (
+            parsed_f.plain_text, parsed_g.plain_text if parsed_g is not None else "",
+            a_text, b_text, axis.orientation.value, float(axis.position),
+            chosen_method.value if chosen_method else None,
+        )
+        if self._job is not None and self._job.key == key and self._job_running():
+            # Enter repetido o doble clic: no se lanza otro hilo para la misma región.
+            self.status_bar.showMessage("⏳ Ya se está calculando esta región… (Esc cancela)")
+            return
 
-        if is_testing:
-            self._execute_calculation_sync(
-                raw_f, raw_g, parsed_f, parsed_g, a_text, b_text, a_val, b_val,
-                axis, chosen_method, is_interpolated, interp_method_name
-            )
+        ctx = _JobContext(
+            job_id=0, key=key, a_text=a_text, b_text=b_text, a_val=a_val, b_val=b_val,
+            parsed_f=parsed_f, parsed_g=parsed_g, axis=axis, chosen_method=chosen_method,
+            is_interpolated=is_interpolated, interp_method_name=interp_method_name,
+            show_dialogs=self._show_dialogs,
+        )
+        request = CalculationRequest(
+            f=parsed_f, g=parsed_g, a_text=a_text, b_text=b_text, axis=axis, method=chosen_method,
+        )
+        self._start_job(ctx, request)
+
+    def _start_job(self, ctx: _JobContext, request: CalculationRequest) -> None:
+        """Lanza (o ejecuta en línea en modo síncrono) un trabajo, reemplazando al anterior."""
+        self._cancel_active_job()
+        self._job_seq += 1
+        ctx.job_id = self._job_seq
+        self._job = ctx
+        self._set_busy(True)
+        self.status_bar.showMessage("⏳ Calculando integral y generando sólido 3D…  (Esc cancela)")
+        ctx.request = request
+        if not self._synchronous:
+            self._symbolic_timer.start(8000)
+        backend = self._get_backend()
+        if backend is not None:
+            try:
+                ctx.in_process = True
+                backend.submit(ctx.job_id, request)
+                return
+            except Exception:  # noqa: BLE001 - proceso caído: seguir con un hilo
+                logger.exception("El proceso de cálculo no aceptó el trabajo; se usará un hilo")
+                ctx.in_process = False
+                import time; self._backend_failed_at = time.time()
+                backend.shutdown()
+                self._backend = None
+        worker = CalculationWorker(ctx.job_id, request, self._signals)
+        ctx.worker = worker
+        self._worker = worker
+        if self._synchronous:
+            worker.run()
         else:
-            self._execute_calculation_async(
-                raw_f, raw_g, parsed_f, parsed_g, a_text, b_text, a_val, b_val,
-                axis, chosen_method, is_interpolated, interp_method_name
-            )
+            worker.start()
 
-    def _execute_calculation_sync(
-        self,
-        raw_f: str,
-        raw_g: str,
-        parsed_f: object,
-        parsed_g: object | None,
-        a_text: str,
-        b_text: str,
-        a_val: float,
-        b_val: float,
-        axis: RevolutionAxis,
-        chosen_method: SolidMethod | None,
-        is_interpolated: bool,
-        interp_method_name: str,
-    ) -> None:
-        """Ejecuta el cálculo síncronamente (modo headless / testing)."""
-        try:
-            if parsed_g is not None:
-                diff_parsed = parse_math_expression(f"({raw_f}) - ({raw_g})")
-                res_2d = integrate_definite(diff_parsed, a_text, b_text)
-            else:
-                res_2d = integrate_definite(parsed_f, a_text, b_text)  # type: ignore[arg-type]
-        except Exception as exc:
-            self.result_label.setText("Área / Integral: Error en cálculo")
-            self._show_parse_error(f"Error al integrar en 2D: {exc}")
+    def _is_current(self, job_id: int) -> bool:
+        return self._job is not None and self._job.job_id == job_id
+
+    def _on_job_mesh(self, job_id: int, mesh: object) -> None:
+        """La malla llega antes que el volumen simbólico: se muestra de inmediato."""
+        if not self._is_current(job_id) or not isinstance(mesh, SolidMesh3D):
             return
-
-        if not res_2d.is_success:
-            self.result_label.setText("Área / Integral: Error en cálculo")
-            self._show_parse_error(f"Error al integrar en 2D: {res_2d.error_message}")
-            return
-
-        try:
-            region = Region2D(f_expr=raw_f, g_expr=raw_g if raw_g else None, a=a_text, b=b_text, variable="x")
-            rec = recommend_method(region, axis)
-            vol_res = calculate_revolution_volume(region, axis, method=chosen_method)
-        except Exception as exc:
+        assert self._job is not None
+        self._job.mesh_shown = True
+        # Si un motor no puede dibujar la malla, se limpia: antes conservaba el sólido anterior.
+        if not self.canvas3d.plot_solid_mesh(mesh, show_axis=True):
             self.canvas3d.clear_canvas()
-            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
-                self.threejs_viewer.clear_canvas()
-            self._show_parse_error(f"Error en configuración de sólido: {exc}")
+        if not self.threejs_viewer.plot_solid_mesh(mesh, show_axis=True):
+            self.threejs_viewer.clear_canvas()
+        self.status_bar.showMessage("⏳ Sólido 3D listo; calculando el volumen exacto…  (Esc cancela)")
+
+    def _on_job_assets(self, job_id: int, assets: object) -> None:
+        """Fórmulas LaTeX renderizadas en el proceso de cálculo (no en el hilo de Qt)."""
+        if self._is_current(job_id) and isinstance(assets, dict):
+            assert self._job is not None
+            self._job.extra["formulas"] = assets
+
+    def _formula_html(self, spec: FormulaSpec | None, fallback_html: str = "") -> str:
+        if spec is None:
+            return fallback_html
+        cached = self._prerendered.get(spec)
+        return cached if cached is not None else render_formula(spec)
+
+    def _finish_job(self, job_id: int) -> _JobContext | None:
+        if not self._is_current(job_id):
+            return None  # resultado de un trabajo cancelado o reemplazado: se descarta
+        self._symbolic_timer.stop()
+        self._symbolic_timer.stop()
+        ctx, self._job, self._worker = self._job, None, None
+        self._set_busy(False)
+        if self._backend is not None:
+            self._backend.recycle_if_idle()
+        return ctx
+
+    def _on_job_finished(self, job_id: int, out: object) -> None:
+        """Pinta los resultados del trabajo actual (o informa su error)."""
+        ctx = self._finish_job(job_id)
+        if ctx is None or not isinstance(out, CalculationOutput):
             return
-
-        if not vol_res.is_success:
-            self.canvas3d.clear_canvas()
-            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
-                self.threejs_viewer.clear_canvas()
-            err_msg = vol_res.error_message or "Error al calcular el volumen del sólido."
-            self._show_parse_error(err_msg)
-            self.results_text.setPlainText(f"Error al calcular el sólido de revolución:\n{err_msg}")
-            self.steps_text.setPlainText(f"Error al generar el desarrollo paso a paso:\n{err_msg}")
-            return
-
-        mesh = generate_solid_mesh(region, axis, num_radial=24, num_axial=18)
-        output = CalculationOutput(res_2d, region, rec, vol_res, mesh, axis, chosen_method)
-        self._render_and_display_results(output, a_text, b_text, a_val, b_val, parsed_f, parsed_g, is_interpolated, interp_method_name)
-
-    def _execute_calculation_async(
-        self,
-        raw_f: str,
-        raw_g: str,
-        parsed_f: object,
-        parsed_g: object | None,
-        a_text: str,
-        b_text: str,
-        a_val: float,
-        b_val: float,
-        axis: RevolutionAxis,
-        chosen_method: SolidMethod | None,
-        is_interpolated: bool,
-        interp_method_name: str,
-    ) -> None:
-        """Ejecuta el cálculo en un hilo secundario sin bloquear la interfaz."""
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(100)
-
-        self.status_bar.showMessage("⏳ Calculando integral y generando sólido 3D...")
-        self.plot_button.setEnabled(False)
-        self.plot_button.setText("⏳ Calculando...")
-
-        self._worker = CalculationWorker(
-            raw_f, raw_g, parsed_f, parsed_g, a_text, b_text, axis, chosen_method, parent=self
-        )
-        self._worker.calculation_finished.connect(
-            lambda out: self._on_worker_finished(out, a_text, b_text, a_val, b_val, parsed_f, parsed_g, is_interpolated, interp_method_name)
-        )
-        self._worker.calculation_error.connect(self._on_worker_error)
-        self._worker.start()
-
-    def _on_worker_finished(
-        self,
-        out: CalculationOutput,
-        a_text: str,
-        b_text: str,
-        a_val: float,
-        b_val: float,
-        parsed_f: object,
-        parsed_g: object | None,
-        is_interpolated: bool,
-        interp_method_name: str,
-    ) -> None:
-        """Callback invocado cuando el worker en segundo plano completa el cálculo."""
-        self.plot_button.setEnabled(True)
-        self.plot_button.setText("⚙  Generar Gráficas y Sólido")
         if not out.res_2d.is_success:
-            self.result_label.setText("Área / Integral: Error en cálculo")
-            self._show_parse_error(f"Error al integrar en 2D: {out.res_2d.error_message}")
+            self._reset_outputs(
+                f"Error al integrar en 2D:\n{out.res_2d.error_message}",
+                label="Área / Integral: Error en cálculo",
+            )
+            self._show_parse_error(f"Error al integrar en 2D: {out.res_2d.error_message}", ctx.show_dialogs)
             return
 
         if not out.vol_res.is_success:
-            self.canvas3d.clear_canvas()
-            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
-                self.threejs_viewer.clear_canvas()
             err_msg = out.vol_res.error_message or "Error al calcular el volumen del sólido."
-            self._show_parse_error(err_msg)
-            self.results_text.setPlainText(f"Error al calcular el sólido de revolución:\n{err_msg}")
-            self.steps_text.setPlainText(f"Error al generar el desarrollo paso a paso:\n{err_msg}")
+            self._reset_outputs(
+                f"Error al calcular el sólido de revolución:\n{err_msg}",
+                label=f"∫ [{ctx.a_text}, {ctx.b_text}] = {out.res_2d.exact_plain_text} | Volumen 3D: no calculado",
+            )
+            self._show_parse_error(err_msg, ctx.show_dialogs)
             return
 
-        self._render_and_display_results(out, a_text, b_text, a_val, b_val, parsed_f, parsed_g, is_interpolated, interp_method_name)
+        self._render_and_display_results(out, ctx)
 
-    def _on_worker_error(self, err_msg: str) -> None:
-        """Callback invocado si el worker en segundo plano lanza una excepción."""
-        self.plot_button.setEnabled(True)
-        self.plot_button.setText("⚙  Generar Gráficas y Sólido")
-        self.canvas3d.clear_canvas()
-        if hasattr(self, "threejs_viewer") and self.threejs_viewer:
-            self.threejs_viewer.clear_canvas()
-        self._show_parse_error(f"Error en configuración de sólido: {err_msg}")
+    def _on_job_failed(self, job_id: int, err_msg: str) -> None:
+        """Excepción inesperada dentro del trabajo actual."""
+        ctx = self._finish_job(job_id)
+        if ctx is None:
+            return
+        self._reset_outputs(f"Error en configuración de sólido:\n{err_msg}", label="Área / Integral: Error en cálculo")
+        self._show_parse_error(f"Error en configuración de sólido: {err_msg}", ctx.show_dialogs)
 
-    def _render_and_display_results(
-        self,
-        out: CalculationOutput,
-        a_text: str,
-        b_text: str,
-        a_val: float,
-        b_val: float,
-        parsed_f: object,
-        parsed_g: object | None,
-        is_interpolated: bool,
-        interp_method_name: str,
-    ) -> None:
-        """Renderiza las mallas y publica los reportes pedagógicos con los resultados calculados."""
+    def _render_and_display_results(self, out: CalculationOutput, ctx: _JobContext) -> None:
+        """Sombrea la región, asegura el sólido en pantalla y publica los reportes."""
         res_2d = out.res_2d
         vol_res = out.vol_res
-        rec = out.rec
-        mesh = out.mesh
         axis = out.axis
         chosen_method = out.chosen_method
 
         # Muestreo fino para sombrear el área entre curvas en [a, b]
-        shade_curve_f = sample_expression(parsed_f, x_min=a_val, x_max=b_val, num_points=120)  # type: ignore[arg-type]
+        shade_curve_f = sample_expression(ctx.parsed_f, x_min=ctx.a_val, x_max=ctx.b_val, num_points=120)
         if shade_curve_f.is_valid:
-            if parsed_g is not None:
-                shade_curve_g = sample_expression(parsed_g, x_min=a_val, x_max=b_val, num_points=120)  # type: ignore[arg-type]
+            if ctx.parsed_g is not None:
+                shade_curve_g = sample_expression(ctx.parsed_g, x_min=ctx.a_val, x_max=ctx.b_val, num_points=120)
                 y2_data = shade_curve_g.y_values if shade_curve_g.is_valid else 0.0
             else:
                 y2_data = 0.0
@@ -892,30 +1126,30 @@ class MainWindow(QMainWindow):
                 y2_values=y2_data,
                 color=Palette.VIOLET,
                 alpha=0.30,
-                label=f"Región [{a_text}, {b_text}]",
+                label=f"Región [{ctx.a_text}, {ctx.b_text}]",
             )
 
-        # Generar y dibujar la malla 3D numérica
-        if mesh.is_valid:
-            self.canvas3d.plot_solid_mesh(mesh, show_axis=True)
-            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
-                self.threejs_viewer.plot_solid_mesh(mesh, show_axis=True)
-        else:
-            self.canvas3d.clear_canvas()
-            if hasattr(self, "threejs_viewer") and self.threejs_viewer:
-                self.threejs_viewer.clear_canvas()
+        if not ctx.mesh_shown:
+            if out.mesh is not None and out.mesh.is_valid:
+                self.canvas3d.plot_solid_mesh(out.mesh, show_axis=True)
+                self.threejs_viewer.plot_solid_mesh(out.mesh, show_axis=True)
+            else:
+                self._clear_3d()
 
-        # Actualizar etiquetas y reporte pedagógico
-        area_str = f"∫ [{a_text}, {b_text}] = {res_2d.exact_plain_text}"
+        area_str = f"∫ [{ctx.a_text}, {ctx.b_text}] = {res_2d.exact_plain_text}"
         approx_vol = (
-            f" ≈ {vol_res.numeric_value:.4f}" if vol_res.numeric_value is not None else ""
+            f" ≈ {_fmt(vol_res.numeric_value)}" if vol_res.numeric_value is not None else ""
         )
         self.result_label.setText(
             f"{area_str} | Volumen 3D: {vol_res.exact_plain_text}{approx_vol}"
         )
 
-        self._display_pedagogical_report(res_2d, vol_res, rec, axis)
-        self._display_steps_report(vol_res, rec, axis, a_text, b_text)
+        self._prerendered = ctx.extra.get("formulas", {})
+        try:
+            self._display_pedagogical_report(res_2d, vol_res, out.rec, axis)
+            self._display_steps_report(vol_res, out.rec, axis, ctx.a_text, ctx.b_text)
+        finally:
+            self._prerendered = {}
         self.export_pdf_button.setEnabled(True)
 
         method_note = ""
@@ -924,194 +1158,169 @@ class MainWindow(QMainWindow):
                 f" ⚠ {chosen_method.value} no aplica aquí (hay hueco interior); "
                 f"se usó {vol_res.method.value}."
             )
-        prefix = f"✔ Interpolación ({interp_method_name}) | " if is_interpolated else "✔ "
+        prefix = f"✔ Interpolación ({ctx.interp_method_name}) | " if ctx.is_interpolated else "✔ "
         self.status_bar.showMessage(
             f"{prefix}Sólido generado: V = {vol_res.exact_plain_text}{approx_vol} "
             f"({vol_res.method.value}){method_note}"
         )
 
-    def keyPressEvent(self, event) -> None:
-        """Permite cancelar el cálculo en curso pulsando la tecla Escape."""
-        if event.key() == Qt.Key.Key_Escape and self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self.plot_button.setEnabled(True)
-            self.plot_button.setText("⚙  Generar Gráficas y Sólido")
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Escape cancela el cálculo en curso (sin errores si no hay ninguno)."""
+        if event.key() == Qt.Key.Key_Escape and self._job is not None:
+            self._cancel_active_job()
+            self._reset_outputs("Cálculo cancelado por el usuario.", label="Área / Integral: —")
             self.status_bar.showMessage("⚠ Cálculo cancelado por el usuario.")
+            event.accept()
             return
         super().keyPressEvent(event)
 
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        """Al cerrar, se cancela el trabajo; el hilo daemon no impide salir."""
+        self._cancel_active_job()
+        self._signals.blockSignals(True)
+        if self._backend is not None:
+            self._backend.shutdown()
+        super().closeEvent(event)
+
+    # ── Reportes (HTML compatible con QTextDocument) ───────────────────────
+    #
+    # QTextEdit solo entiende un subconjunto de HTML/CSS: ignora border-radius, box-shadow y el
+    # padding/borde de los <div>, por eso las "tarjetas" del desarrollo se veían como texto
+    # plano y el título quedaba como un subrayado azul. Aquí se usan tablas (que sí admiten
+    # fondo, borde y relleno), con el mismo aspecto en pantalla y en el PDF exportado.
+    # Todo texto dinámico pasa por html.escape.
+
+    _METHOD_TITLES = {
+        SolidMethod.DISKS: "Método de Discos",
+        SolidMethod.WASHERS: "Método de Arandelas",
+        SolidMethod.SHELLS: "Método de Casquillos Cilíndricos",
+    }
+
+    @staticmethod
+    def _axis_description(axis: RevolutionAxis) -> str:
+        kind = "Horizontal" if axis.orientation == AxisOrientation.HORIZONTAL else "Vertical"
+        return f"{kind} ({axis.label})"
 
     def _display_pedagogical_report(
         self,
         res_2d: object,
         vol_res: VolumeResult,
-        rec: MethodRecommendation,
+        rec: MethodRecommendation | None,
         axis: RevolutionAxis,
     ) -> None:
         """Formatea e inserta el análisis analítico y pedagógico en results_text."""
-        method_names = {
-            SolidMethod.DISKS: "Método de Discos",
-            SolidMethod.WASHERS: "Método de Arandelas",
-            SolidMethod.SHELLS: "Método de Casquillos Cilíndricos",
-        }
-        method_title = method_names.get(vol_res.method, vol_res.method.value.capitalize())
-
-        axis_desc = f"{'Horizontal' if axis.orientation == AxisOrientation.HORIZONTAL else 'Vertical'} ({axis.label})"
+        method_title = self._METHOD_TITLES.get(vol_res.method, vol_res.method.value.capitalize())
         numeric_str = (
-            f"V ≈ {vol_res.numeric_value:.5f} u³"
+            f"V ≈ {_fmt(vol_res.numeric_value, 5)} u³"
             if vol_res.numeric_value is not None
             else "No disponible"
         )
 
-        vol_latex = f"V = {vol_res.exact_latex}" if vol_res.exact_latex else f"V = {vol_res.exact_plain_text}"
-        vol_img = latex_to_base64_html(
-            vol_latex,
-            fontsize=13,
-            color="#27ae60",
-            fallback_text=f"V = {vol_res.exact_plain_text}",
+        vol_img = self._formula_html(volume_formula(vol_res))
+        setup_img = self._formula_html(
+            setup_formula(vol_res), f"<code>{_esc(vol_res.integrand_plain_text)}</code>"
         )
 
-        setup_latex = vol_res.integral_setup_latex or vol_res.integrand_latex
-        if setup_latex:
-            setup_img = latex_to_base64_html(
-                setup_latex,
-                fontsize=12,
-                color="#1e3a8a",
-                fallback_text=vol_res.integrand_plain_text,
-            )
-        else:
-            setup_img = f"<code>{vol_res.integrand_plain_text}</code>"
-
-        html = f"""
-        <div style="font-family: sans-serif; line-height: 1.4;">
-            <h3 style="color: #2980b9; margin-bottom: 4px;">{method_title}</h3>
-            <p><b>Eje de rotación:</b> {axis_desc}</p>
-            <div style="margin: 6px 0;">
-                <b>Volumen exacto:</b><br>
-                {vol_img}
-                <span style="font-size: 11px; color: #7f8c8d; margin-left: 6px;">({vol_res.exact_plain_text})</span>
-            </div>
-            <p><b>Volumen numérico:</b> <b>{numeric_str}</b></p>
-            <div style="margin: 6px 0;">
-                <b>Planteamiento de la integral:</b><br>
-                {setup_img}
-            </div>
-            <hr style="border: 0; border-top: 1px solid #ddd;">
+        justification = _esc(rec.justification) if rec is not None else ""
+        html_parts = [f"""
+        <div style="font-family: sans-serif;">
+            <h3 style="color: #2980b9; margin-bottom: 4px;">{_esc(method_title)}</h3>
+            <p><b>Eje de rotación:</b> {_esc(self._axis_description(axis))}</p>
+            <p><b>Volumen exacto:</b><br>{vol_img}
+               <span style="font-size: 11px; color: #7f8c8d;">({_esc(vol_res.exact_plain_text)})</span></p>
+            <p><b>Volumen numérico:</b> <b>{_esc(numeric_str)}</b></p>
+            <p><b>Planteamiento de la integral:</b><br>{setup_img}</p>
+            <hr>
             <h4 style="color: #2c3e50; margin-bottom: 4px;">Justificación y Análisis Pedagógico:</h4>
-            <p style="color: #34495e;">{rec.justification}</p>
-        """
+            <p style="color: #34495e;">{justification}</p>
+        """]
 
         all_warnings: list[str] = []
-        if rec.limitations_or_warnings:
+        if rec is not None and rec.limitations_or_warnings:
             all_warnings.extend(rec.limitations_or_warnings)
         if vol_res.warnings:
             all_warnings.extend(vol_res.warnings)
 
         if all_warnings:
-            warning_text = "<br>".join(all_warnings)
-            html += f"""
-            <p style="color: #d35400; background-color: #fef5e7; padding: 6px; border-left: 3px solid #e67e22;">
-                <b>Nota:</b> {warning_text}
-            </p>
-            """
+            warning_text = "<br>".join(_esc(w) for w in all_warnings)
+            html_parts.append(f"""
+            <table width="100%" cellpadding="6" cellspacing="0" style="background-color: #fef5e7; margin-top: 6px;">
+              <tr><td width="3" style="background-color: #e67e22;"></td>
+                  <td style="color: #d35400;"><b>Nota:</b> {warning_text}</td></tr>
+            </table>
+            """)
 
-        html += """
+        html_parts.append("""
         <p style="margin-top: 10px; font-size: 11px; color: #2980b9;">
             👉 <i>Consulta la pestaña <b>'Desarrollo'</b> para ver los pasos analíticos detallados (antiderivada, evaluación y simplificación).</i>
         </p>
         </div>
-        """
-        self.results_text.setHtml(html)
+        """)
+        self.results_text.setHtml("".join(html_parts))
 
     def _display_steps_report(
         self,
         vol_res: VolumeResult,
-        rec: MethodRecommendation,
+        rec: MethodRecommendation | None,
         axis: RevolutionAxis,
         a_text: str,
         b_text: str,
     ) -> None:
         """Formatea e inserta los pasos analíticos intermedios en la pestaña Desarrollo."""
-        method_names = {
-            SolidMethod.DISKS: "Método de Discos",
-            SolidMethod.WASHERS: "Método de Arandelas",
-            SolidMethod.SHELLS: "Método de Casquillos Cilíndricos",
-        }
-        method_title = method_names.get(vol_res.method, vol_res.method.value.capitalize())
-        axis_desc = f"{'Horizontal' if axis.orientation == AxisOrientation.HORIZONTAL else 'Vertical'} ({axis.label})"
+        method_title = self._METHOD_TITLES.get(vol_res.method, vol_res.method.value.capitalize())
+        axis_desc = self._axis_description(axis)
 
-        html = f"""
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; padding: 8px;">
-            <div style="background-color: #1e3a8a; color: white; padding: 14px 18px; border-radius: 8px; margin-bottom: 16px;">
-                <h2 style="margin: 0 0 4px 0; font-size: 17px; color: white;">Desarrollo Analítico Paso a Paso</h2>
-                <div style="font-size: 12px; opacity: 0.95;">
-                    <b>{method_title}</b> &nbsp;|&nbsp; <b>Eje de giro:</b> {axis_desc} &nbsp;|&nbsp; <b>Límites:</b> [{a_text}, {b_text}]
-                </div>
-            </div>
-        """
+        parts = [f"""
+        <table width="100%" cellpadding="14" cellspacing="0" style="background-color: #1e3a8a; margin-bottom: 12px;">
+          <tr><td>
+            <span style="font-size: 17px; font-weight: bold; color: #ffffff;">Desarrollo Analítico Paso a Paso</span><br>
+            <span style="font-size: 12px; color: #dbeafe;"><b>{_esc(method_title)}</b> &nbsp;|&nbsp;
+              <b>Eje de giro:</b> {_esc(axis_desc)} &nbsp;|&nbsp; <b>Límites:</b> [{_esc(a_text)}, {_esc(b_text)}]</span>
+          </td></tr>
+        </table>
+        """]
 
         for step in vol_res.steps:
             expr_html = ""
             if step.expression_latex or step.expression_plain_text:
-                if step.expression_latex:
-                    img_tag = latex_to_base64_html(
-                        step.expression_latex,
-                        fontsize=12,
-                        color="#0f172a",
-                        fallback_text=step.expression_plain_text,
-                    )
-                else:
-                    lines = step.expression_plain_text.split("\n")
-                    expr_lines = "<br>".join(lines)
-                    img_tag = f"<code>{expr_lines}</code>"
-
+                content = self._formula_html(
+                    step_formula(step), f"<code>{_esc(step.expression_plain_text)}</code>"
+                )
                 expr_html = f"""
-                <div style="background-color: #f8fafc; border-left: 4px solid #2563eb; padding: 10px 14px; margin-top: 8px; border-radius: 0 4px 4px 0;">
-                    {img_tag}
-                </div>
+                <table width="100%" cellpadding="8" cellspacing="0" style="background-color: #f8fafc; margin-top: 6px;">
+                  <tr><td width="4" style="background-color: #2563eb;"></td><td>{content}</td></tr>
+                </table>
                 """
 
-            html += f"""
-            <div style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
-                <div style="font-size: 13px; font-weight: bold; color: #1e40af; margin-bottom: 4px;">
-                    {step.title}
-                </div>
-                <div style="font-size: 12px; color: #475569; line-height: 1.45;">
-                    {step.explanation}
-                </div>
+            parts.append(f"""
+            <table width="100%" cellpadding="10" cellspacing="0" border="1"
+                   style="border-color: #e2e8f0; border-style: solid; background-color: #ffffff; margin-bottom: 10px;">
+              <tr><td>
+                <span style="font-size: 13px; font-weight: bold; color: #1e40af;">{_esc(step.title)}</span><br>
+                <span style="font-size: 12px; color: #475569;">{_esc(step.explanation)}</span>
                 {expr_html}
-            </div>
-            """
+              </td></tr>
+            </table>
+            """)
 
-        final_latex = f"V = {vol_res.exact_latex}" if vol_res.exact_latex else f"V = {vol_res.exact_plain_text}"
-        final_img = latex_to_base64_html(
-            final_latex,
-            fontsize=14,
-            color="#047857",
-            fallback_text=f"V = {vol_res.exact_plain_text}",
-        )
-        approx_str = f" ≈ {vol_res.numeric_value:.5f} u³" if vol_res.numeric_value is not None else ""
-        html += f"""
-            <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; border-left: 5px solid #10b981; border-radius: 8px; padding: 12px 16px; margin-top: 14px;">
-                <div style="font-size: 13px; font-weight: bold; color: #065f46; margin-bottom: 6px;">
-                    Resultado Final del Volumen
-                </div>
-                <div>
-                    {final_img}
-                    <span style="font-size: 13px; font-weight: bold; color: #047857; margin-left: 8px;">{approx_str}</span>
-                </div>
-                <div style="font-size: 11px; color: #059669; margin-top: 4px;">
-                    Valor exacto: <code>{vol_res.exact_plain_text}</code>
-                </div>
-            </div>
-        </div>
-        """
-        self.steps_text.setHtml(html)
+        final_img = self._formula_html(final_formula(vol_res))
+        approx_str = f" ≈ {_fmt(vol_res.numeric_value, 5)} u³" if vol_res.numeric_value is not None else ""
+        parts.append(f"""
+            <table width="100%" cellpadding="10" cellspacing="0" style="background-color: #ecfdf5; margin-top: 12px;">
+              <tr><td width="5" style="background-color: #10b981;"></td><td>
+                <span style="font-size: 13px; font-weight: bold; color: #065f46;">Resultado Final del Volumen</span><br>
+                {final_img}
+                <span style="font-size: 13px; font-weight: bold; color: #047857;">{_esc(approx_str)}</span><br>
+                <span style="font-size: 11px; color: #059669;">Valor exacto: <code>{_esc(vol_res.exact_plain_text)}</code></span>
+              </td></tr>
+            </table>
+        """)
+        self.steps_text.setHtml("".join(parts))
 
-    def _show_parse_error(self, message: str) -> None:
+    def _show_parse_error(self, message: str, show_dialog: bool | None = None) -> None:
         """Muestra un error en la UI sin congelar la aplicación."""
         self.status_bar.showMessage(f"✖ Error: {message}")
-        if not self._show_dialogs:
+        if not (self._show_dialogs if show_dialog is None else show_dialog):
             return
         dialog = QMessageBox(self)
         dialog.setWindowTitle("Atención en el cálculo")
@@ -1139,6 +1348,8 @@ class MainWindow(QMainWindow):
 
         if not file_path:
             return
+        if not file_path.lower().endswith(".pdf"):
+            file_path += ".pdf"
 
         success = self._export_to_pdf_path(file_path)
         if success:

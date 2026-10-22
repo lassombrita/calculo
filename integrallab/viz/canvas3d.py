@@ -53,7 +53,12 @@ class PlotCanvas3D(FigureCanvasQTAgg):
             self.setParent(parent)  # type: ignore[arg-type]
 
         self.axes = self.figure.add_subplot(111, projection="3d")
+        # Orden de dibujo fijo (interior → exterior → eje). Con el orden automático por
+        # profundidad media, la superficie interior (rosa) se pintaba ENCIMA de la exterior.
+        self.axes.computed_zorder = False
         self._surface_collections: list[object] = []
+        self._draw_deferred = False
+        self._auto_rotate = True
         self._axis_lines: list[object] = []
 
         # Escala de la vista: proporciones reales de la caja y factor de zoom.
@@ -74,8 +79,51 @@ class PlotCanvas3D(FigureCanvasQTAgg):
         self.mpl_connect("scroll_event", self._on_scroll)
         self.mpl_connect("button_press_event", self._stop_rotation)
 
+    # ── Dibujo solo cuando se ve ─────────────────────────────────────────────
+
+    def _hidden_in_visible_window(self) -> bool:
+        """True si la ventana está a la vista pero este lienzo no (motor WebGL u otra pestaña)."""
+        win = self.window()
+        return win is not None and win.isVisible() and not self.isVisible()
+
+    def draw(self) -> None:  # noqa: D102 - pospone el dibujo si el lienzo está oculto
+        if self._hidden_in_visible_window():
+            self._draw_deferred = True
+            return
+        super().draw()
+
+    def draw_idle(self) -> None:  # noqa: D102
+        if self._hidden_in_visible_window():
+            self._draw_deferred = True
+            return
+        super().draw_idle()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._draw_deferred:
+            self._draw_deferred = False
+            self.draw_idle()
+
+    def set_auto_rotate(self, enabled: bool) -> None:
+        """Activa o desactiva la animación de giro al dibujar un sólido (se recuerda)."""
+        self._auto_rotate = bool(enabled)
+        if not enabled:
+            self._stop_rotation()
+
+    def reset_view(self) -> None:
+        """Vuelve a la vista isométrica inicial con zoom 1."""
+        self._stop_rotation()
+        self._zoom = 1.0
+        self.axes.view_init(elev=25, azim=45)
+        self._apply_view_scale()
+        self.draw_idle()
+
     def _rotation_step(self) -> None:
         """Avanza un frame de la animación de rotación automática del sólido 3D."""
+        if self._hidden_in_visible_window():
+            # Oculto (motor WebGL activo u otra pestaña): no gastar CPU del hilo de la interfaz.
+            self._stop_rotation()
+            return
         self._rotation_frame += 1
         azim = self._rotation_azim_start + self._rotation_frame * 4.5
         self.axes.view_init(elev=self._rotation_elev, azim=azim)
@@ -164,16 +212,18 @@ class PlotCanvas3D(FigureCanvasQTAgg):
         """Retorna las líneas que representan el eje de rotación en 3D."""
         return list(self._axis_lines)
 
-    def clear_canvas(self) -> None:
+    def clear_canvas(self, redraw: bool = True) -> None:
         """Limpia las superficies y restablece la escena tridimensional."""
         self._stop_rotation()
         self.axes.clear()
+        self.axes.computed_zorder = False
         self._surface_collections.clear()
         self._axis_lines.clear()
         self._box_aspect = None
         self._zoom = 1.0
         self._setup_axes_style()
-        self.draw()
+        if redraw:
+            self.draw_idle()
 
     def plot_solid_mesh(
         self,
@@ -201,7 +251,12 @@ class PlotCanvas3D(FigureCanvasQTAgg):
             return False
 
         if clear:
-            self.clear_canvas()
+            self.clear_canvas(redraw=False)  # un único dibujo al final, no dos
+
+        # La malla puede venir densa (64 × 48) para el visor WebGL; Matplotlib la submuestrea a
+        # una densidad parecida a la anterior (≈ 20 × 25 caras) para no encarecer cada cuadro.
+        rows, cols = mesh.x_outer.shape
+        stride = {"rcount": min(rows, 20), "ccount": min(cols, 25)}
 
         # 1. Dibujar la superficie exterior
         try:
@@ -214,6 +269,8 @@ class PlotCanvas3D(FigureCanvasQTAgg):
                 edgecolor="none",
                 shade=True,
                 antialiased=True,
+                zorder=2,
+                **stride,
             )
             self._surface_collections.append(surf_out)
         except Exception:
@@ -235,6 +292,9 @@ class PlotCanvas3D(FigureCanvasQTAgg):
                     edgecolor="none",
                     shade=True,
                     antialiased=True,
+                    zorder=1,
+                    rcount=min(mesh.x_inner.shape[0], 20),
+                    ccount=min(mesh.x_inner.shape[1], 25),
                 )
                 self._surface_collections.append(surf_in)
             except Exception:
@@ -248,12 +308,15 @@ class PlotCanvas3D(FigureCanvasQTAgg):
         self._zoom = 1.0
         self._fit_box_aspect()
 
-        self.draw()
+        self.draw_idle()
 
-        # 5. Iniciar animación de rotación automática (360° en 4 segundos)
+        # 5. Animación de rotación automática (360° en 4 segundos), solo si el lienzo se ve.
+        #    Antes corría siempre: con el motor WebGL activo eran 80 redibujados ocultos de
+        #    ~36 ms cada uno (≈ 2,9 s de CPU del hilo de la interfaz por cada sólido).
         self._rotation_frame = 0
         self._rotation_azim_start = 45.0
-        self._rotation_timer.start()
+        if self._auto_rotate and not self._hidden_in_visible_window():
+            self._rotation_timer.start()
 
         return True
 
@@ -286,6 +349,7 @@ class PlotCanvas3D(FigureCanvasQTAgg):
             linestyle="--",
             linewidth=2.2,
             label=f"Eje de giro: {mesh.axis.label}",
+            zorder=3,
         )
         self._axis_lines.extend(lines)
         style_legend(self.axes.legend(loc="upper right", framealpha=0.9))

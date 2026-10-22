@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover
     sympy = None  # type: ignore[assignment]
     _SYMPY_AVAILABLE = False
 
+from integrallab.core.parser import ParsedExpression
 from integrallab.core.solids import SolutionStep
 
 
@@ -74,6 +75,25 @@ class InterpolationResult:
         x_sym = sympy.Symbol("x")
         val = self.sympy_expr.subs(x_sym, x_val)
         return float(val.evalf())
+
+    def to_parsed_expression(self, raw_text: str = "") -> ParsedExpression:
+        """Entrega el interpolante como ``ParsedExpression`` listo para el resto del dominio.
+
+        La interfaz no debe volver a parsear ``polynomial_plain_text``: un spline es un
+        ``Piecewise`` con desigualdades que el parser seguro no admite (y con muchos puntos
+        supera el límite de longitud), así que el flujo «puntos → spline → sólido» fallaba
+        siempre con 5 o más puntos.
+        """
+        if not self.is_success or self.sympy_expr is None:
+            raise ValueError("La interpolación no fue exitosa; no hay expresión que entregar.")
+        free = sorted(str(s) for s in getattr(self.sympy_expr, "free_symbols", set()))
+        return ParsedExpression(
+            raw_text=raw_text or self.polynomial_plain_text,
+            plain_text=self.polynomial_plain_text,
+            latex=self.polynomial_latex,
+            sympy_expr=self.sympy_expr,
+            variables=free or ["x"],
+        )
 
 
 def _normalize_points(
@@ -195,6 +215,22 @@ def interpolate_lagrange(
         )
 
 
+def _newton_coefficient(value: float) -> sympy.Expr:
+    """Coeficiente de Newton: entero exacto si está a 1e-7 de un entero NO nulo; si no, Float.
+
+    Antes cualquier |valor| < 1e-7 se «redondeaba» a 0 (``round(3e-9) == 0``), de modo que las
+    diferencias divididas de orden alto —pequeñas con datos suaves o abscisas grandes— se
+    perdían y el polinomio dejaba de pasar por los puntos (con 12 puntos de sen x el grado
+    caía de 11 a 10 y el error en los nodos superaba 1e-3).
+    """
+    if value == 0.0:
+        return sympy.Integer(0)
+    nearest = round(value)
+    if nearest != 0 and abs(value - nearest) < 1e-7:
+        return sympy.Integer(int(nearest))
+    return sympy.Float(value)
+
+
 def interpolate_newton(
     points: Sequence[DataPoint | tuple[float, float]],
     variable: str = "x",
@@ -240,12 +276,12 @@ def interpolate_newton(
         )
 
         # Construir polinomio analítico
-        poly_newton: sympy.Expr = sympy.Rational(f"{dd[0][0]:.8f}").limit_denominator(10000) if abs(dd[0][0] - round(dd[0][0])) < 1e-7 else sympy.Float(dd[0][0])
+        poly_newton: sympy.Expr = _newton_coefficient(dd[0][0])
         product_factor: sympy.Expr = sympy.Integer(1)
 
         for k in range(1, n):
             product_factor = product_factor * (x_sym - xs[k - 1])
-            coeff = sympy.Rational(f"{dd[0][k]:.8f}").limit_denominator(10000) if abs(dd[0][k] - round(dd[0][k])) < 1e-7 else sympy.Float(dd[0][k])
+            coeff = _newton_coefficient(dd[0][k])
             poly_newton = poly_newton + coeff * product_factor
 
         simplified_poly = sympy.simplify(sympy.expand(poly_newton))

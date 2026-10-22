@@ -779,3 +779,40 @@
    - Actualizado `docs/PROJECT_STATUS.md` corrigiendo referencias residuales a versiones anteriores.
    - Verificada la suite completa de pruebas: **178 pruebas aprobadas al 100 %** (0 fallos, 0 errores en 23.75 s).
 
+
+
+---
+
+## Sesi?n 15 ? Integraci?n de Plan A (Auditor?a Ronda 3), Robustez de Tuber?as en Windows y Mejoras P1?P4
+
+**Fecha:** 2026-10-22  
+**Entorno:** Windows ? `C:\Users\merej\OneDrive\Desktop\Calculo` ? Python 3.14.6 ? PySide6 6.12.0 ? SymPy 1.14.0 ? Matplotlib 3.11.2 ? NumPy 2.5.4 ? pytest 9.1.1
+
+### Diagn?stico y Contexto
+- Se revis? el informe t?cnico de la tercera auditor?a post-parches sobre el commit `c2eddc9`.
+- Se detect? que el cierre de tuber?as de `multiprocessing` en Windows (`_listen_loop`) bajo el contexto `spawn` quedaba en espera infinita en `_winapi.WaitForMultipleObjects` ante la terminaci?n as?ncrona de procesos hijos en r?faga (debido a la sem?ntica de handles y pipes en Windows).
+
+### Implementaciones y Correcciones Realizadas
+1. **Parche Plan A oficial (`calculo-planA-parche-unico.patch`)**:
+   - Aplicado ?ntegramente sobre base limpia `c2eddc9` (23 archivos afectados).
+   - Instant?nea previa de cambios locales asegurada en la etiqueta Git `backup-wip-20261022`.
+2. **Cierre limpio de tuber?as en Windows (`integrallab/ui/calc_backend.py`)**:
+   - `_listen_loop` implementa sondeo no bloqueante con `conn.poll(0.1)` acoplado a verificaci?n de `proc.is_alive()`.
+   - Garantiza que `integrallab-escucha` sea el due?o exclusivo del cierre de la tuber?a al detectar la terminaci?n del proceso sin fugas de descriptores ni cuelgues.
+3. **P1 ? Timeout simb?lico y fallback num?rico (`core/pipeline.py`, `core/solids.py`, `ui/main_window.py`)**:
+   - `numeric_volume()` integrado en `solids.py` con integraci?n num?rica de alta precisi?n mediante `mpmath` segmentada por cruces.
+   - `CalculationRequest` soporta `numeric_only: bool`.
+   - Entrega anticipada de malla 3D y validaci?n temprana de cruce de eje previa a integrales pesadas.
+   - Temporizador de 8 s en `MainWindow` (`_symbolic_timer`) que conmuta autom?ticamente a c?lculo num?rico si SymPy excede el l?mite.
+4. **P2 ? Proceso de reserva en segundo plano (`integrallab/ui/calc_backend.py`)**:
+   - Implementado `_start_spare()` y gesti?n de `_spare` en `ProcessCalculationBackend`.
+   - `_restart()` intercambia de forma instant?nea al proceso de reserva precalentado, eliminando la latencia de arranque en fr?o (~780 ms).
+   - Reciclaje de procesos con reseteo de contador `_jobs_done`.
+5. **P3 ? Resiliencia a excepciones en Three.js (`integrallab/viz/threejs_wrapper.py`)**:
+   - `_dispatch_render` encapsula la llamada JavaScript a `renderSolid` dentro de una IIFE con bloque `try/catch`.
+   - Los errores de renderizado en JavaScript se reportan con `ok: true, error: ...`, limpiando el visor sin degradar el motor WebGL a Matplotlib por fallos recuperables.
+6. **P4 ? Reintento autom?tico del backend de c?lculo (`integrallab/ui/main_window.py`)**:
+   - `_backend_failed_at` con reintento autom?tico tras 30 s de un fallo temporal de arranque en el proceso spawn.
+
+### Verificaci?n
+- Suite completa de pruebas ejecutada: **299 pruebas aprobadas al 100 %**, 1 prueba omitida (`test_calc_process_exits_when_the_ui_dies` por dise?o espec?fico de `/proc` en Linux), 0 fallos.

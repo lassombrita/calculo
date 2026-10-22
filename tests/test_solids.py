@@ -639,3 +639,60 @@ def test_audit_c4_axis_crossing_region_detected() -> None:
     assert rec.is_decidable is False
     assert len(rec.limitations_or_warnings) > 0
     assert "atraviesa el interior" in rec.limitations_or_warnings[0]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regresión: el eje de giro no puede atravesar el interior de la región
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("f", "g", "a", "b", "axis_factory", "method"),
+    [
+        # y = x en [0, 1] girando alrededor de y = 0.5 (discos)
+        ("x", None, 0, 1, lambda: RevolutionAxis.horizontal(0.5), SolidMethod.DISKS),
+        # y = x en [0, 2] con casquillos alrededor de x = 1 (los lados se solapan)
+        ("x", None, 0, 2, lambda: RevolutionAxis.vertical(1), SolidMethod.SHELLS),
+        # sin x vs cos x en [0, pi]: la región cruza el eje X en [pi/2, pi]
+        ("sin(x)", "cos(x)", 0, "pi", lambda: RevolutionAxis.x_axis(), SolidMethod.WASHERS),
+    ],
+)
+def test_explicit_method_rejects_axis_inside_region(f, g, a, b, axis_factory, method) -> None:
+    """Con método explícito, un eje interior debe dar error y no un volumen incorrecto."""
+    result = calculate_revolution_volume(Region2D(f, g, a, b), axis_factory(), method)
+    assert not result.is_success
+    assert "atraviesa" in (result.error_message or "")
+
+
+def test_axis_on_region_border_is_still_valid() -> None:
+    """Un eje tangente al borde de la región (y = 0 con f = x²) sigue siendo válido."""
+    result = calculate_revolution_volume(
+        Region2D("x^2", None, 0, 1), RevolutionAxis.x_axis(), SolidMethod.DISKS
+    )
+    assert result.is_success
+    assert result.numeric_value == pytest.approx(math.pi / 5, rel=1e-9)
+
+
+def test_axis_outside_region_matches_closed_form() -> None:
+    """f = x² en [0, 1] alrededor de y = -1: V = π∫[(x²+1)² − 1]dx = 13π/15."""
+    result = calculate_revolution_volume(
+        Region2D("x^2", None, 0, 1), RevolutionAxis.horizontal(-1), SolidMethod.WASHERS
+    )
+    assert result.is_success
+    assert result.numeric_value == pytest.approx(13 * math.pi / 15, rel=1e-9)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regresión: advertencias de cruce de curvas (solo cruces interiores)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("f", "g", "a", "b", "method"),
+    [
+        ("x", None, 0, 1, SolidMethod.DISKS),             # cruce solo en el extremo x = 0
+        ("sqrt(x)", "x^2", 0, 1, SolidMethod.WASHERS),    # cruces solo en x = 0 y x = 1
+    ],
+)
+def test_no_false_crossing_warning_at_interval_endpoints(f, g, a, b, method) -> None:
+    result = calculate_revolution_volume(Region2D(f, g, a, b), RevolutionAxis.x_axis(), method)
+    assert result.is_success
+    assert not any("se cruzan" in w for w in (result.warnings or []))

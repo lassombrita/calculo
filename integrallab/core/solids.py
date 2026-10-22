@@ -412,6 +412,20 @@ def invert_region_to_variable(
     return new_region, expl_text, expl_latex
 
 
+def inversion_is_cheap(region: Region2D) -> bool:
+    """True si invertir la región es barato: f y g polinomios de grado ≤ 4 en la variable."""
+    try:
+        var_sym = sympy.Symbol(region.variable)
+        for expr in (region.f_expr, region.g_expr):
+            parsed = _ensure_parsed(expr, default_zero=True)
+            poly = sympy.Poly(parsed.sympy_expr, var_sym)
+            if poly.degree() > 4 or len(poly.free_symbols - {var_sym}) > 0:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - no polinómica
+        return False
+
+
 def can_invert_for_method(
     region: Region2D,
     axis: RevolutionAxis,
@@ -439,6 +453,236 @@ def _evaluate_profile(func: Callable[[float], object], ts: np.ndarray) -> np.nda
         except (ArithmeticError, ValueError, TypeError):
             continue
     return out
+
+
+_CROSSING_EPS = 1e-6
+
+
+def _interior_real_roots(
+    solutions: object,
+    num_a: float,
+    num_b: float,
+    eps: float = _CROSSING_EPS,
+) -> list[float]:
+    """Convierte las soluciones de ``sympy.solve`` en raíces reales estrictamente interiores.
+
+    Acepta soluciones racionales, decimales e irracionales (p. ej. ``sqrt(2)``, ``pi/4``) y
+    descarta las complejas, las no numéricas y las que caen en los extremos de ``[a, b]``,
+    donde un cruce no divide la región. Elimina duplicados numéricos.
+    """
+    if not isinstance(solutions, (list, tuple, set)):
+        solutions = [solutions]
+    roots: list[float] = []
+    for sol in solutions:
+        try:
+            value = complex(sympy.sympify(sol).evalf())
+        except (TypeError, ValueError, ArithmeticError):
+            continue
+        if abs(value.imag) >= 1e-9:
+            continue
+        real = float(value.real)
+        if num_a + eps < real < num_b - eps and not any(abs(real - r) < 1e-5 for r in roots):
+            roots.append(real)
+    return sorted(roots)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Barrido numérico previo a sympy.solve (evita bloqueos de decenas de segundos)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCAN_SAMPLES = 2001
+_SCAN_EDGE_SKIP = 10       # muestras junto a cada extremo que no cuentan como "casi cero"
+_SCAN_NEAR_ZERO = 1e-6     # |h| relativo por debajo del cual se sospecha una tangencia
+
+
+def _has_piecewise(*exprs: object) -> bool:
+    """True si alguna expresión contiene ``Piecewise`` (p. ej. un spline cúbico)."""
+    return any(isinstance(e, sympy.Basic) and e.has(sympy.Piecewise) for e in exprs)
+
+
+def _scan_interior_roots(
+    expr: sympy.Expr,
+    var_sym: sympy.Symbol,
+    num_a: float,
+    num_b: float,
+) -> tuple[str, list[float]]:
+    """Barre ``expr`` en (a, b) con NumPy y clasifica sus raíces interiores.
+
+    Returns:
+        ``("none", [])`` si no hay cambio de signo y ``|expr|`` se mantiene lejos de cero en el
+        interior: no existe cruce y no hace falta ``sympy.solve``.
+        ``("roots", raíces)`` con las raíces de cada cambio de signo, refinadas por bisección.
+        ``("unknown", raíces)`` si no se pudo evaluar o hay un mínimo casi nulo (posible
+        tangencia): quien llama debe usar el método simbólico de siempre.
+    """
+    if not num_a < num_b:
+        return "unknown", []
+    ts = np.linspace(num_a, num_b, _SCAN_SAMPLES)
+    hs = _sample_profile(expr, var_sym, ts)
+    if hs is None or hs.shape != ts.shape or not np.all(np.isfinite(hs)):
+        return "unknown", []
+
+    try:
+        fn = sympy.lambdify(var_sym, expr, modules="numpy")
+    except Exception:
+        return "unknown", []
+
+    def h(t: float) -> float:
+        with np.errstate(all="ignore"):
+            v = complex(fn(t))
+        return v.real if abs(v.imag) < 1e-12 else float("nan")
+
+    roots: list[float] = []
+    eps = _CROSSING_EPS
+    sign = np.sign(hs)
+    for i in np.flatnonzero(sign[:-1] * sign[1:] < 0):
+        lo, hi = float(ts[i]), float(ts[i + 1])
+        h_lo = hs[i]
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            h_mid = h(mid)
+            if not np.isfinite(h_mid):
+                break
+            if (h_mid < 0) == (h_lo < 0):
+                lo, h_lo = mid, h_mid
+            else:
+                hi = mid
+        root = 0.5 * (lo + hi)
+        if num_a + eps < root < num_b - eps:
+            roots.append(root)
+    # Ceros exactos en muestras interiores
+    for i in np.flatnonzero(hs[1:-1] == 0.0) + 1:
+        t = float(ts[i])
+        if num_a + eps < t < num_b - eps and not any(abs(t - r) < 1e-9 for r in roots):
+            roots.append(t)
+    roots.sort()
+
+    scale = max(1.0, float(np.max(np.abs(hs))))
+    inner = np.abs(hs[_SCAN_EDGE_SKIP:-_SCAN_EDGE_SKIP])
+    near_zero = inner.size > 0 and float(np.min(inner)) < _SCAN_NEAR_ZERO * scale
+    if roots:
+        return ("unknown" if near_zero else "roots"), roots
+    return ("unknown" if near_zero else "none"), []
+
+
+def _dominates(
+    hi_expr: sympy.Expr,
+    lo_expr: sympy.Expr,
+    var_sym: sympy.Symbol,
+    t0: float,
+    t1: float,
+) -> bool:
+    """True si ``hi_expr >= lo_expr`` en (t0, t1), decidido con 9 muestras interiores.
+
+    Sustituye la evaluación en el punto medio, que fallaba con singularidades evitables:
+    sin(x)/x en [-1, 1] vale nan en x = 0, la comparación ``nan >= 0`` es False y las curvas
+    se invertían (volumen −5,638 en lugar de +5,638).
+    """
+    ts = np.linspace(t0, t1, 11)[1:-1]
+    hi_vals = _sample_profile(hi_expr, var_sym, ts)
+    lo_vals = _sample_profile(lo_expr, var_sym, ts)
+    if hi_vals is not None and lo_vals is not None:
+        diff = hi_vals - lo_vals
+        diff = diff[np.isfinite(diff)]
+        if diff.size:
+            return float(np.median(diff)) >= 0.0
+    try:
+        mid = (t0 + t1) / 2.0
+        return float(hi_expr.subs(var_sym, mid).evalf()) >= float(lo_expr.subs(var_sym, mid).evalf())
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _first_non_real(expr: sympy.Expr, var_sym: sympy.Symbol, num_a: float, num_b: float) -> float | None:
+    """Abscisa interior donde ``expr`` deja de ser real en un tramo (≥ 3 muestras seguidas).
+
+    Un punto aislado (singularidad evitable como sin(x)/x en 0) o un extremo (log x en 0) no
+    cuentan; sqrt(x) en [-1, 1] o asin(x) en [0, 2] sí. Devuelve None si no hay problema.
+    """
+    ts = np.linspace(num_a, num_b, _SCAN_SAMPLES)
+    vals = _sample_profile(expr, var_sym, ts)
+    if vals is None:
+        return None
+    bad = np.isnan(vals[1:-1])
+    run = 0
+    for i, flag in enumerate(bad, start=1):
+        run = run + 1 if flag else 0
+        if run >= 3:
+            return float(ts[i - 1])
+    return None
+
+
+def domain_error(region: Region2D) -> str | None:
+    """Mensaje si f o g no son reales en parte de [a, b]; None si la región es válida."""
+    try:
+        f_parsed = _ensure_parsed(region.f_expr)
+        g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
+        num_a, num_b, _, _ = _evaluate_bounds(region.a, region.b)
+    except Exception:  # noqa: BLE001 - el error de límites lo informa otro paso
+        return None
+    var_sym = sympy.Symbol(region.variable)
+    for name, parsed in (("f", f_parsed), ("g", g_parsed)):
+        where = _first_non_real(parsed.sympy_expr, var_sym, num_a, num_b)
+        if where is not None:
+            return (
+                f"{name}({region.variable}) = {parsed.plain_text} no está definida o no es real en parte "
+                f"del intervalo [{num_a:.4g}, {num_b:.4g}] (por ejemplo, en {region.variable} ≈ {where:.4g}). "
+                "Ajuste los límites al dominio de la función."
+            )
+    return None
+
+
+def _numeric_value(expr: object) -> float | None:
+    """Valor real de un resultado de SymPy; las integrales sin resolver se calculan por cuadratura.
+
+    ``float(Integral(...).evalf())`` fallaba con integrales no elementales (x**x: «No
+    disponible») y con funciones escalón (floor: error interno de SymPy). Se usa mpmath en 16
+    subintervalos. Devuelve None si el resultado es complejo o no numérico.
+    """
+    import mpmath
+
+    def quad(integral: sympy.Integral) -> sympy.Expr:
+        if len(integral.limits) != 1 or len(integral.limits[0]) != 3:
+            return integral
+        var, lo, hi = integral.limits[0]
+        fn = sympy.lambdify(var, integral.function, modules="mpmath")
+        return sympy.Float(mpmath.quad(fn, mpmath.linspace(float(lo), float(hi), 17)))
+
+    try:
+        if isinstance(expr, sympy.Basic) and expr.has(sympy.Integral):
+            expr = expr.replace(lambda e: isinstance(e, sympy.Integral), quad)
+        value = complex(sympy.sympify(expr).evalf())
+    except Exception:  # noqa: BLE001
+        return None
+    if abs(value.imag) > 1e-9 * max(1.0, abs(value.real)):
+        return None
+    return value.real
+
+
+def _solve_interior_roots(
+    expr: sympy.Expr,
+    var_sym: sympy.Symbol,
+    num_a: float,
+    num_b: float,
+    pieces: tuple[object, ...],
+) -> list[float]:
+    """Raíces reales interiores de ``expr = 0`` evitando ``sympy.solve`` cuando sobra.
+
+    - Si el barrido numérico prueba que no hay raíces interiores, devuelve ``[]`` sin resolver.
+    - Si las curvas contienen ``Piecewise`` (spline), usa las raíces numéricas: ``sympy.solve``
+      sobre un ``Piecewise`` puede no terminar.
+    - En cualquier otro caso usa ``sympy.solve`` exactamente como antes.
+    """
+    status, approx = _scan_interior_roots(expr, var_sym, num_a, num_b)
+    if status == "none":
+        return []
+    if _has_piecewise(*pieces):
+        return approx
+    try:
+        roots = _interior_real_roots(sympy.solve(sympy.Eq(expr, 0), var_sym), num_a, num_b)
+    except Exception:  # noqa: BLE001 - p. ej. NotImplementedError con Max/Min
+        return approx
+    return roots or approx
 
 
 def _order_curves_by_distance(
@@ -489,24 +733,18 @@ def _order_curves_by_distance(
     # 1. f - axis = g - axis => f = g (cruce de las curvas originales)
     # 2. f - axis = -(g - axis) => f + g = 2*axis (cruce donde distancias son iguales)
     
-    # Caso 1: f(x) = g(x)
-    eq1 = sympy.Eq(f_sym, g_sym)
+    # Caso 1: f(x) = g(x). Solo cruces reales ESTRICTAMENTE interiores a (a, b):
+    # un cruce en un extremo del intervalo no divide la región (p. ej. y=x con g=0 en [0, 1]).
+    # El barrido numérico previo evita sympy.solve cuando no hay cruce (p. ej. sin²x·cos³x + 2
+    # tardaba ~36 s en recommend_method) y cuando f o g son un spline (Piecewise).
     try:
-        crosses_f_eq_g = sympy.solve(eq1, var_sym)
-        for x in crosses_f_eq_g:
-            if isinstance(x, (sympy.Float, sympy.Rational)):
-                x_float = float(x.evalf())
-            else:
-                continue
-            
-            # Verificar si el cruce está en el intervalo [a, b]
-            if num_a <= x_float <= num_b:
-                warnings.append(
-                    f"¡ADVERTENCIA! Las curvas se cruzan en x = {x_float:.3f} dentro del "
-                    f"intervalo [{num_a}, {num_b}]. La determinación de la curva exterior "
-                    f"basada solo en el punto medio puede ser incorrecta. El volumen calculado "
-                    f"asume que una curva es siempre exterior."
-                )
+        for x_float in _solve_interior_roots(f_sym - g_sym, var_sym, num_a, num_b, (f_sym, g_sym)):
+            warnings.append(
+                f"¡ADVERTENCIA! Las curvas se cruzan en x = {x_float:.3f} dentro del "
+                f"intervalo [{num_a}, {num_b}]. La determinación de la curva exterior "
+                f"basada solo en el punto medio puede ser incorrecta. El volumen calculado "
+                f"asume que una curva es siempre exterior."
+            )
     except Exception:
         pass
 
@@ -516,50 +754,36 @@ def _order_curves_by_distance(
     else:
         # Para distancias iguales: (f - axis)^2 = (g - axis)^2
         try:
-            eq_squared = sympy.Eq(sympy.expand((f_sym - axis_sym)**2), 
-                                   sympy.expand((g_sym - axis_sym)**2))
-            crosses_dist_equal = sympy.solve(eq_squared, var_sym)
-            
-            # Filtrar soluciones que ya fueron detectadas en caso 1 (f = g)
-            f_equals_g_str = str(sympy.Eq(f_sym, g_sym))
-            already_checked = set()
-            
-            for x in crosses_dist_equal:
-                if isinstance(x, (sympy.Float, sympy.Rational)):
-                    x_float = float(x.evalf())
-                else:
+            dist_equal_expr = sympy.expand((f_sym - axis_sym)**2) - sympy.expand((g_sym - axis_sym)**2)
+            crosses_dist_equal = _solve_interior_roots(
+                dist_equal_expr, var_sym, num_a, num_b, (f_sym, g_sym)
+            )
+
+            for x_float in crosses_dist_equal:
+                # Descartar las raíces que ya corresponden al caso f = g
+                dist_f_at_x = evaluate_distance(dist_f, x_float)
+                dist_g_at_x = evaluate_distance(dist_g, x_float)
+                if (
+                    dist_f_at_x is not None
+                    and dist_g_at_x is not None
+                    and abs(dist_f_at_x - dist_g_at_x) < 1e-9
+                    and abs(
+                        (evaluate_distance(f_sym, x_float) or 0.0)
+                        - (evaluate_distance(g_sym, x_float) or 0.0)
+                    ) < 1e-9
+                ):
                     continue
-                
-                # Verificar si no es una repetición del caso f=g
-                try:
-                    dist_f_at_x = evaluate_distance(dist_f, x_float)
-                    dist_g_at_x = evaluate_distance(dist_g, x_float)
-                    if abs(dist_f_at_x - dist_g_at_x) < 1e-9:
-                        # Esto es f=g, ya fue tratado arriba
-                        already_checked.add(x_float)
-                        continue
-                except Exception:
-                    pass
-                
-                # Verificar si está en el intervalo y no fue ya chequeado
-                if num_a <= x_float <= num_b and x_float not in already_checked:
-                    warnings.append(
-                        f"¡ADVERTENCIA! Las curvas tienen igual distancia al eje en "
-                        f"x = {x_float:.3f} dentro del intervalo [{num_a}, {num_b}]. "
-                        f"La región podría estar autointerseccionada."
-                    )
+                warnings.append(
+                    f"¡ADVERTENCIA! Las curvas tienen igual distancia al eje en "
+                    f"x = {x_float:.3f} dentro del intervalo [{num_a}, {num_b}]. "
+                    f"La región podría estar autointerseccionada."
+                )
         except Exception:
             pass
 
-    # Decisión simple basada en punto medio (con advertencia si hay cruces)
-    try:
-        val_f_mid = float(dist_f.subs(var_sym, mid_val).evalf())
-        val_g_mid = float(dist_g.subs(var_sym, mid_val).evalf())
-    except Exception:
-        val_f_mid = 1.0
-        val_g_mid = 0.0
-
-    if val_f_mid >= val_g_mid:
+    # Curva exterior: la que está más lejos del eje en la mayoría de las muestras interiores
+    # (no solo en el punto medio, que puede ser una singularidad evitable).
+    if _dominates(dist_f, dist_g, var_sym, num_a, num_b):
         r_outer_dist = dist_f
         r_inner_dist = dist_g
     else:
@@ -1080,10 +1304,7 @@ def calculate_disk_volume(
         integrand = sympy.pi * integrand_core
         vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
 
-        try:
-            num_val = float(vol_sym.evalf())
-        except (TypeError, ValueError):
-            num_val = None
+        num_val = _numeric_value(vol_sym)
 
         # Detectar resultado no finito (integral divergente o dominio imaginario)
         import math as _math
@@ -1146,14 +1367,27 @@ def find_curve_crossings(
 ) -> list[tuple[float, sympy.Expr]]:
     """Encuentra las intersecciones reales estrictamente interiores en (num_a, num_b)."""
     candidates = []
+    numeric_fallback: list[float] = []
+
+    def _collect(expr: sympy.Expr) -> None:
+        """Agrega las raíces de ``expr = 0``; el barrido numérico evita resolver si no hay cruce."""
+        status, approx = _scan_interior_roots(expr, var_sym, num_a, num_b)
+        if status == "none":
+            return  # sin raíces interiores: el resultado es idéntico al de sympy.solve
+        if _has_piecewise(f_sym, g_sym):
+            candidates.extend(sympy.Float(r) for r in approx)
+            return
+        numeric_fallback.extend(approx)
+        sols = sympy.solve(sympy.Eq(expr, 0), var_sym)  # puede lanzar (Max, Min, Abs…)
+        if isinstance(sols, (list, tuple, set)):
+            for s in sols:
+                candidates.append(sympy.sympify(s))
+        elif sols is not None:
+            candidates.append(sympy.sympify(sols))
+
     # 1. f(t) = g(t)
     try:
-        sols1 = sympy.solve(sympy.Eq(f_sym, g_sym), var_sym)
-        if isinstance(sols1, (list, tuple, set)):
-            for s in sols1:
-                candidates.append(sympy.sympify(s))
-        elif sols1 is not None:
-            candidates.append(sympy.sympify(sols1))
+        _collect(f_sym - g_sym)
     except Exception:
         pass
 
@@ -1161,12 +1395,7 @@ def find_curve_crossings(
     if method == SolidMethod.WASHERS and axis_val != 0:
         axis_sym = sympy.nsimplify(axis_val)
         try:
-            sols2 = sympy.solve(sympy.Eq(f_sym + g_sym, 2 * axis_sym), var_sym)
-            if isinstance(sols2, (list, tuple, set)):
-                for s in sols2:
-                    candidates.append(sympy.sympify(s))
-            elif sols2 is not None:
-                candidates.append(sympy.sympify(sols2))
+            _collect(f_sym + g_sym - 2 * axis_sym)
         except Exception:
             pass
 
@@ -1183,6 +1412,13 @@ def find_curve_crossings(
                         crossings.append((val, c_simp))
         except Exception:
             pass
+
+    if not crossings and numeric_fallback:
+        # sympy.solve no pudo (NotImplementedError con Max/Min) pero el barrido sí vio cruces:
+        # sin esto se integraba con una sola orientación y el volumen salía negativo.
+        for val in sorted(numeric_fallback):
+            if num_a + eps < val < num_b - eps and not any(abs(val - c[0]) < 1e-5 for c in crossings):
+                crossings.append((val, sympy.Float(val)))
 
     crossings.sort(key=lambda item: item[0])
     return crossings
@@ -1211,14 +1447,7 @@ def partition_washer_intervals(
     for i in range(len(bounds) - 1):
         t0_num, t0_sym = bounds[i]
         t1_num, t1_sym = bounds[i + 1]
-        mid = (t0_num + t1_num) / 2.0
-        try:
-            df = float(dist_f.subs(var_sym, mid).evalf())
-            dg = float(dist_g.subs(var_sym, mid).evalf())
-        except Exception:
-            df, dg = 1.0, 0.0
-
-        if df >= dg:
+        if _dominates(dist_f, dist_g, var_sym, t0_num, t1_num):
             r_out = dist_f
             r_in = dist_g
             core = (f_sym - axis_sym)**2 - (g_sym - axis_sym)**2
@@ -1410,10 +1639,7 @@ def calculate_washer_volume(
             integrand_core = t_info["core"]
             integrand = sympy.pi * integrand_core
             vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
-            try:
-                num_val = float(vol_sym.evalf())
-            except (TypeError, ValueError):
-                num_val = None
+            num_val = _numeric_value(vol_sym)
 
             steps = _build_volume_steps(
                 method=SolidMethod.WASHERS,
@@ -1459,10 +1685,7 @@ def calculate_washer_volume(
                 )
 
             vol_sym = sympy.simplify(sum(vol_partials))
-            try:
-                num_val = float(vol_sym.evalf())
-            except (TypeError, ValueError):
-                num_val = None
+            num_val = _numeric_value(vol_sym)
 
             setup_latex = _clean_latex(" + ".join(setup_parts))
             steps = _build_piecewise_washer_steps(
@@ -1498,6 +1721,67 @@ def calculate_washer_volume(
             is_success=False,
             error_message=str(exc),
         )
+
+
+def _build_piecewise_shell_steps(
+    region: Region2D,
+    radius_expr: sympy.Expr,
+    pieces: list[tuple[sympy.Expr, sympy.Expr, sympy.Expr]],
+    top_is_f: list[bool],
+    vol_partials: list[sympy.Expr],
+    vol_sym: sympy.Expr,
+    num_val: float | None,
+) -> list[SolutionStep]:
+    """Desarrollo pedagógico de casquillos cuando las curvas se cruzan (un tramo por orientación)."""
+    var = region.variable
+    cl = _clean_latex
+
+    def height_latex(h: sympy.Expr, f_on_top: bool) -> str:
+        if h.has(sympy.Piecewise):  # repetir un spline completo en cada tramo lo haría ilegible
+            return "f(x) - g(x)" if f_on_top else "g(x) - f(x)"
+        return sympy.latex(h)
+
+    cuts = [t1 for _t0, t1, _h in pieces[:-1]]
+    cuts_text = ", ".join(f"{var} = {c}" for c in cuts)
+    setup = [
+        rf"2\pi \int_{{{sympy.latex(t0)}}}^{{{sympy.latex(t1)}}} {sympy.latex(radius_expr)}\left({height_latex(h, top)}\right) d{var}"
+        for (t0, t1, h), top in zip(pieces, top_is_f)
+    ]
+    approx_text = f" ≈ {num_val:.5f} u³" if num_val is not None else ""
+    return [
+        SolutionStep(
+            step_number=1,
+            title="1. Detección de intersecciones y división por tramos",
+            explanation=(
+                f"Las curvas se cruzan en {cuts_text} dentro de [{region.a}, {region.b}]. La altura del "
+                f"casquillo es |f − g|, así que se integra en {len(pieces)} tramos, cada uno con la curva "
+                "de arriba menos la de abajo."
+            ),
+            expression_plain_text=f"Intersecciones: {cuts_text}",
+            expression_latex=cl(rf"\text{{Cortes en: }} {', '.join(sympy.latex(c) for c in cuts)}"),
+        ),
+        SolutionStep(
+            step_number=2,
+            title="2. Planteamiento de la integral de volumen por tramos",
+            explanation="El volumen total es la suma de los volúmenes de cada tramo: V = V₁ + V₂ + ...",
+            expression_plain_text=" + ".join(f"V_{i + 1}" for i in range(len(pieces))),
+            expression_latex=cl("V = " + " + ".join(setup)),
+        ),
+        SolutionStep(
+            step_number=3,
+            title="3. Cálculo de cada integral definida",
+            explanation="Integramos y evaluamos en los límites de cada tramo.",
+            expression_plain_text="; ".join(f"V_{i + 1} = {vp}" for i, vp in enumerate(vol_partials)),
+            expression_latex=cl(r" \quad ".join(rf"V_{{{i + 1}}} = {sympy.latex(vp)}" for i, vp in enumerate(vol_partials))),
+        ),
+        SolutionStep(
+            step_number=4,
+            title="4. Volumen total final (suma de tramos)",
+            explanation="Sumamos el volumen de cada tramo para obtener el volumen total.",
+            expression_plain_text=f"V = {vol_sym}{approx_text}",
+            expression_latex=cl(rf"V = {sympy.latex(vol_sym)}"),
+        ),
+    ]
 
 
 def calculate_shell_volume(
@@ -1552,58 +1836,58 @@ def calculate_shell_volume(
         axis_pos_sym = sympy.nsimplify(axis.position)
         radius_expr = sympy.Abs(var_sym - axis_pos_sym)
 
-        # Altura del casquillo: diferencia entre la curva superior y la inferior
-        mid_val = (num_a + num_b) / 2.0
-        val_f = float(f_parsed.sympy_expr.subs(var_sym, mid_val).evalf())
-        val_g = float(g_parsed.sympy_expr.subs(var_sym, mid_val).evalf())
-
-        # Capturar advertencias de cruces de curvas
-        _, _, _, warnings_from_curves = _order_curves_by_distance(
-            f_parsed.sympy_expr,
-            g_parsed.sympy_expr,
-            var_sym,
-            axis.position,
-            num_a,
-            num_b,
+        # Altura del casquillo: |f − g|. Si las curvas se cruzan dentro de (a, b), se integra por
+        # tramos con la orientación correcta en cada uno. Antes se usaba (f − g) o (g − f) según el
+        # punto medio para TODO el intervalo: con f = x, g = x² en [0, 2] y eje Y daba −8π/3 en
+        # lugar de 3π, marcado como éxito.
+        f_expr, g_expr = f_parsed.sympy_expr, g_parsed.sympy_expr
+        warnings_from_curves: list[str] = []
+        crossings = find_curve_crossings(
+            f_expr, g_expr, var_sym, axis.position, num_a, num_b, method=SolidMethod.SHELLS
         )
+        bounds = [(num_a, sym_a)] + crossings + [(num_b, sym_b)]
+        pieces: list[tuple[sympy.Expr, sympy.Expr, sympy.Expr]] = []
+        orientation: list[bool] = []
+        for (t0_num, t0_sym), (t1_num, t1_sym) in zip(bounds, bounds[1:]):
+            top_is_f = _dominates(f_expr, g_expr, var_sym, t0_num, t1_num)
+            orientation.append(top_is_f)
+            pieces.append((t0_sym, t1_sym, (f_expr - g_expr) if top_is_f else (g_expr - f_expr)))
 
-        # Construir mensaje de advertencia si hay cruces de curvas
-        cross_warnings = ""
-        if warnings_from_curves:
-            cross_warnings = (
-                f"\n⚠️  **ADVERTENCIA DE CÁLCULO**\n"
-                f"Las curvas se cruzan dentro del intervalo [{num_a}, {num_b}]. El volumen calculado "
-                f"asume que una curva es siempre exterior (basado en el punto medio). "
-                f"Esto puede dar un valor incorrecto si el cruce ocurre cerca de los límites."
+        vol_partials = [
+            sympy.integrate(2 * sympy.pi * radius_expr * h, (var_sym, t0, t1)) for t0, t1, h in pieces
+        ]
+        vol_sym = sympy.Add(*vol_partials)
+        num_val = _numeric_value(vol_sym)
+
+        if len(pieces) == 1:
+            height_expr = pieces[0][2]
+            integrand_core = radius_expr * height_expr
+            steps = _build_volume_steps(
+                method=SolidMethod.SHELLS,
+                region=region,
+                axis=axis,
+                var_sym=var_sym,
+                sym_a=sym_a,
+                sym_b=sym_b,
+                integrand_core=integrand_core,
+                vol_sym=vol_sym,
+                num_val=num_val,
+                shell_radius=radius_expr,
+                shell_height=height_expr,
             )
-
-        if val_f >= val_g:
-            height_expr = f_parsed.sympy_expr - g_parsed.sympy_expr
         else:
-            height_expr = g_parsed.sympy_expr - f_parsed.sympy_expr
-
-        integrand_core = radius_expr * height_expr
+            height_expr = sympy.Abs(f_expr - g_expr)
+            integrand_core = radius_expr * height_expr
+            warnings_from_curves.append(
+                f"Las curvas se cruzan dentro del intervalo [{num_a}, {num_b}]. La altura del casquillo es "
+                f"|f − g| y la integral se dividió en {len(pieces)} tramos."
+            )
+            # Desarrollo por tramos: el desarrollo genérico re-integraba x·|f − g| con SymPy, y con
+            # un spline (Piecewise) tardaba ~135 s de los ~139 s del cálculo.
+            steps = _build_piecewise_shell_steps(
+                region, radius_expr, pieces, orientation, vol_partials, vol_sym, num_val
+            )
         integrand = 2 * sympy.pi * integrand_core
-        vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
-
-        try:
-            num_val = float(vol_sym.evalf())
-        except (TypeError, ValueError):
-            num_val = None
-
-        steps = _build_volume_steps(
-            method=SolidMethod.SHELLS,
-            region=region,
-            axis=axis,
-            var_sym=var_sym,
-            sym_a=sym_a,
-            sym_b=sym_b,
-            integrand_core=integrand_core,
-            vol_sym=vol_sym,
-            num_val=num_val,
-            shell_radius=radius_expr,
-            shell_height=height_expr,
-        )
 
         return VolumeResult(
             method=SolidMethod.SHELLS,
@@ -1612,9 +1896,13 @@ def calculate_shell_volume(
             numeric_value=num_val,
             integrand_plain_text=str(integrand),
             integrand_latex=_clean_latex(sympy.latex(integrand)),
-            integral_setup_latex=_clean_latex(
-                f"2\\pi \\int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}} "
-                f"\\left({sympy.latex(radius_expr)}\\right) \\left({sympy.latex(height_expr)}\\right) d{region.variable}"
+            integral_setup_latex=(
+                steps[1].expression_latex.removeprefix("V = ")  # suma por tramos: _clean_latex quitaría |f − g|
+                if len(pieces) > 1
+                else _clean_latex(
+                    f"2\\pi \\int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}} "
+                    f"\\left({sympy.latex(radius_expr)}\\right) \\left({sympy.latex(height_expr)}\\right) d{region.variable}"
+                )
             ),
             is_success=True,
             steps=steps,
@@ -1628,19 +1916,73 @@ def calculate_shell_volume(
         )
 
 
+def _reject_negative(res: VolumeResult) -> VolumeResult:
+    """Red de seguridad: un volumen negativo es siempre un error de planteamiento, nunca un éxito."""
+    value = res.numeric_value
+    if res.is_success and value is not None and value < -1e-9 * max(1.0, abs(value)):
+        return VolumeResult(
+            method=res.method,
+            is_success=False,
+            error_message=(
+                f"El volumen calculado es negativo ({value:.6g}): no se pudo determinar qué curva es "
+                "exterior en todo el intervalo. Revise la región o divida el intervalo en tramos."
+            ),
+        )
+    return res
+
+
+def numeric_volume(region: Region2D, axis: RevolutionAxis) -> float | None:
+    """V por cuadratura (mpmath), partiendo en los cruces. V?lido porque el eje no atraviesa
+    la regi?n (axis_crossing_error ya lo garantiza)."""
+    import mpmath
+
+    f = _ensure_parsed(region.f_expr).sympy_expr
+    g = _ensure_parsed(region.g_expr, default_zero=True).sympy_expr
+    var = sympy.Symbol(region.variable)
+    a, b, _sa, _sb = _evaluate_bounds(region.a, region.b)
+    k = sympy.nsimplify(axis.position)
+    if axis.orientation is AxisOrientation.VERTICAL:  # cortes en x: casquillos
+        core = 2 * sympy.pi * sympy.Abs(var - k) * sympy.Abs(f - g)
+        method = SolidMethod.SHELLS
+    else:  # eje horizontal: arandelas
+        core = sympy.pi * sympy.Abs((f - k) ** 2 - (g - k) ** 2)
+        method = SolidMethod.WASHERS
+    cuts = [float(t) for t, _ in find_curve_crossings(f, g, var, axis.position, a, b, method=method)]
+    nodes = sorted({a, b, *cuts, *np.linspace(a, b, 17).tolist()})
+    val = mpmath.quad(sympy.lambdify(var, core, "mpmath"), nodes)
+    return float(val) if mpmath.isfinite(val) else None
+
+
 def calculate_revolution_volume(
     region: Region2D,
     axis: RevolutionAxis | None = None,
     method: SolidMethod | None = None,
     allow_inversion: bool = True,
+    *,
+    _check_axis: bool = True,
 ) -> VolumeResult:
     """Función de alto nivel para calcular el volumen según el método seleccionado o recomendado.
 
     Si el método solicitado requiere cortes en la otra variable (por ejemplo, Discos/Arandelas
     en eje vertical o Casquillos en eje horizontal) y allow_inversion es True, invierte analíticamente
     la región mediante SymPy para resolver la integral en dy.
+
+    Si el eje de giro atraviesa el interior de la región, devuelve ``is_success=False``: los dos
+    lados se solapan al girar y las fórmulas por método dejarían un volumen incorrecto.
     """
     axis = axis or RevolutionAxis.x_axis()
+
+    if _check_axis and method is not None:
+        axis_msg = _axis_crossing_error(region, axis)
+        if axis_msg:
+            return VolumeResult(
+                method=method,
+                is_success=False,
+                error_message=(
+                    f"{axis_msg} Elija un eje que no atraviese la región (por ejemplo, uno "
+                    "que pase por su borde o fuera de ella)."
+                ),
+            )
 
     if method is None:
         rec = recommend_method(region, axis)
@@ -1659,7 +2001,9 @@ def calculate_revolution_volume(
             try:
                 inv_region, expl_text, expl_latex = invert_region_to_variable(region, target_var=target_var)
                 sub_method = method
-                res = calculate_revolution_volume(inv_region, axis, method=sub_method, allow_inversion=False)
+                res = calculate_revolution_volume(
+                    inv_region, axis, method=sub_method, allow_inversion=False, _check_axis=False
+                )
                 if res.is_success:
                     inversion_step = SolutionStep(
                         step_number=1,
@@ -1683,7 +2027,7 @@ def calculate_revolution_volume(
                                 expression_latex=s.expression_latex,
                             )
                         )
-                    return VolumeResult(
+                    return _reject_negative(VolumeResult(
                         method=method,
                         exact_plain_text=res.exact_plain_text,
                         exact_latex=res.exact_latex,
@@ -1694,7 +2038,7 @@ def calculate_revolution_volume(
                         is_success=True,
                         steps=new_steps,
                         warnings=res.warnings,
-                    )
+                    ))
                 return res
             except InversionError as err:
                 return VolumeResult(
@@ -1713,11 +2057,11 @@ def calculate_revolution_volume(
             )
 
     if method == SolidMethod.DISKS:
-        return calculate_disk_volume(region, axis)
+        return _reject_negative(calculate_disk_volume(region, axis))
     elif method == SolidMethod.WASHERS:
-        return calculate_washer_volume(region, axis)
+        return _reject_negative(calculate_washer_volume(region, axis))
     elif method == SolidMethod.SHELLS:
-        return calculate_shell_volume(region, axis)
+        return _reject_negative(calculate_shell_volume(region, axis))
     else:
         return VolumeResult(
             method=SolidMethod.DISKS,
@@ -1757,6 +2101,26 @@ def is_method_compatible(
 # Motor de Recomendación Explicable
 # ─────────────────────────────────────────────────────────────────────────────
 
+_AXIS_SAMPLES = 2001
+_AXIS_TOL = 1e-9
+
+
+def _sample_profile(expr: sympy.Expr, var_sym: sympy.Symbol, ts: np.ndarray) -> np.ndarray | None:
+    """Evalúa ``expr`` en ``ts`` de forma vectorizada; ``None`` si no se puede (nan fuera del dominio)."""
+    try:
+        fn = sympy.lambdify(var_sym, expr, modules="numpy")
+        with np.errstate(all="ignore"):
+            values = np.asarray(fn(ts))
+        if np.iscomplexobj(values):
+            values = np.where(np.abs(values.imag) < 1e-12, values.real, np.nan)
+        values = values.astype(float)
+        if values.ndim == 0:
+            values = np.full(ts.shape, float(values))
+        return values
+    except Exception:
+        return None
+
+
 def _check_axis_intersects_region(
     region: Region2D,
     axis: RevolutionAxis,
@@ -1766,50 +2130,90 @@ def _check_axis_intersects_region(
     g_sym: sympy.Expr,
     var_sym: sympy.Symbol,
 ) -> str | None:
-    """Verifica si el eje de rotación atraviesa el interior de la región plana."""
+    """Verifica si el eje de rotación atraviesa el interior de la región plana.
+
+    Si el eje pasa por dentro de la región, al girar los dos lados se solapan y las fórmulas de
+    discos, arandelas y casquillos (que suman los lados) dejan de dar el volumen del sólido.
+
+    Con corte paralelo al eje (p. ej. región en x y eje vertical) basta comparar la posición del
+    eje con el intervalo. En el otro caso se muestrea densamente la banda [min(f, g), max(f, g)]
+    (2001 puntos) en lugar de 7, para no perder cruces entre muestras.
+    """
     k = axis.position
-    if region.variable == "x":
-        if axis.orientation == AxisOrientation.VERTICAL:
-            if num_a < k < num_b:
-                return (
-                    f"El eje {axis.label} atraviesa el interior del intervalo de integración x ∈ [{num_a:.4g}, {num_b:.4g}]."
-                )
-        else:
-            # Eje horizontal y = k
-            pts = [num_a + (num_b - num_a) * t for t in (0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0)]
-            for p in pts:
-                try:
-                    yf = float(f_sym.subs(var_sym, p).evalf())
-                    yg = float(g_sym.subs(var_sym, p).evalf())
-                    if min(yf, yg) < k < max(yf, yg):
-                        return (
-                            f"El eje {axis.label} atraviesa el interior de la región entre y={min(yf, yg):.2f} y y={max(yf, yg):.2f}, "
-                            "lo cual provocaría autointersecciones."
-                        )
-                except Exception:
-                    pass
-    else:
-        # region.variable == 'y'
-        if axis.orientation == AxisOrientation.HORIZONTAL:
-            if num_a < k < num_b:
-                return (
-                    f"El eje {axis.label} atraviesa el interior del intervalo de integración y ∈ [{num_a:.4g}, {num_b:.4g}]."
-                )
-        else:
-            # Eje vertical x = k
-            pts = [num_a + (num_b - num_a) * t for t in (0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0)]
-            for p in pts:
-                try:
-                    xf = float(f_sym.subs(var_sym, p).evalf())
-                    xg = float(g_sym.subs(var_sym, p).evalf())
-                    if min(xf, xg) < k < max(xf, xg):
-                        return (
-                            f"El eje {axis.label} atraviesa el interior de la región entre x={min(xf, xg):.2f} y x={max(xf, xg):.2f}, "
-                            "lo cual provocaría autointersecciones."
-                        )
-                except Exception:
-                    pass
+    tol = _AXIS_TOL * max(1.0, abs(k))
+
+    is_parallel_cut = (
+        (region.variable == "x" and axis.orientation == AxisOrientation.VERTICAL)
+        or (region.variable == "y" and axis.orientation == AxisOrientation.HORIZONTAL)
+    )
+    if is_parallel_cut:
+        if num_a + tol < k < num_b - tol:
+            return (
+                f"El eje {axis.label} atraviesa el interior del intervalo de integración "
+                f"{region.variable} ∈ [{num_a:.4g}, {num_b:.4g}]."
+            )
+        return None
+
+    ts = np.linspace(num_a, num_b, _AXIS_SAMPLES)
+    f_vals = _sample_profile(f_sym, var_sym, ts)
+    g_vals = _sample_profile(g_sym, var_sym, ts)
+    if f_vals is None or g_vals is None:
+        # Respaldo: evaluación puntual en 7 abscisas, como antes.
+        f_vals = np.full(7, np.nan)
+        g_vals = np.full(7, np.nan)
+        ts = np.array([num_a + (num_b - num_a) * t for t in (0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0)])
+        for i, p in enumerate(ts):
+            try:
+                f_vals[i] = float(f_sym.subs(var_sym, p).evalf())
+                g_vals[i] = float(g_sym.subs(var_sym, p).evalf())
+            except Exception:
+                continue
+
+    lo = np.minimum(f_vals, g_vals)
+    hi = np.maximum(f_vals, g_vals)
+    inside = np.isfinite(lo) & np.isfinite(hi) & (lo + tol < k) & (k < hi - tol)
+    if inside.any():
+        idx = int(np.argmax(inside))
+        coord = "y" if region.variable == "x" else "x"
+        return (
+            f"El eje {axis.label} atraviesa el interior de la región entre "
+            f"{coord}={lo[idx]:.2f} y {coord}={hi[idx]:.2f} (en {region.variable}≈{ts[idx]:.3g}), "
+            "lo cual provocaría autointersecciones."
+        )
     return None
+
+
+def _axis_crossing_error(region: Region2D, axis: RevolutionAxis) -> str | None:
+    """Devuelve el mensaje de error si el eje atraviesa la región; ``None`` si es válido.
+
+    Si la región o los límites no son válidos devuelve ``None``: ese error lo reporta el método
+    de cálculo con su propio mensaje.
+    """
+    try:
+        f_parsed = _ensure_parsed(region.f_expr)
+        g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
+        num_a, num_b, _, _ = _evaluate_bounds(region.a, region.b)
+    except Exception:
+        return None
+    return _check_axis_intersects_region(
+        region,
+        axis,
+        num_a,
+        num_b,
+        f_parsed.sympy_expr,
+        g_parsed.sympy_expr,
+        sympy.Symbol(region.variable),
+    )
+
+
+def axis_crossing_error(region: Region2D, axis: RevolutionAxis) -> str | None:
+    """Mensaje de error si el eje de giro atraviesa el interior de la región; ``None`` si es válido.
+
+    Es la misma verificación que aplica ``calculate_revolution_volume`` (muestreo NumPy, sin
+    SymPy pesado), expuesta para que la interfaz pueda validar el eje antes de lanzar cálculos
+    simbólicos largos o de mostrar un sólido que luego se rechazaría.
+    """
+    return _axis_crossing_error(region, axis)
 
 
 def recommend_method(

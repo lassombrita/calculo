@@ -34,6 +34,7 @@ def window(qapp: QApplication) -> MainWindow:
     """Fixture: instancia de MainWindow para cada test, sin diálogos modales."""
     w = MainWindow()
     w._show_dialogs = False  # Evita QMessageBox.exec() bloqueante en modo offscreen
+    w._synchronous = True    # Mismo trabajo de cálculo, ejecutado en el hilo principal
     return w
 
 

@@ -57,6 +57,30 @@ class NumericResult:
     error_message: str | None = None
 
 
+def subtract_expressions(
+    minuend: ParsedExpression | str,
+    subtrahend: ParsedExpression | str,
+) -> ParsedExpression:
+    """Construye ``f - g`` como ``ParsedExpression`` sin volver a parsear texto.
+
+    Equivale a ``parse_math_expression(f"({f}) - ({g})")`` para entradas de texto, pero también
+    sirve cuando ``f`` o ``g`` provienen de una interpolación (un spline ``Piecewise`` no se
+    puede reconstruir desde su texto con el parser seguro).
+    """
+    f = minuend if isinstance(minuend, ParsedExpression) else parse_math_expression(minuend)
+    g = subtrahend if isinstance(subtrahend, ParsedExpression) else parse_math_expression(subtrahend)
+    if not _SYMPY_AVAILABLE or f.sympy_expr is None or g.sympy_expr is None:
+        return parse_math_expression(f"({f.raw_text}) - ({g.raw_text})")
+    expr = f.sympy_expr - g.sympy_expr
+    return ParsedExpression(
+        raw_text=f"({f.raw_text}) - ({g.raw_text})",
+        plain_text=str(expr),
+        latex=sympy.latex(expr),
+        sympy_expr=expr,
+        variables=sorted(str(s) for s in expr.free_symbols),
+    )
+
+
 def differentiate(
     expression: ParsedExpression | str,
     variable: str = "x",
@@ -203,20 +227,45 @@ def integrate_definite(
 
         result_sym = sympy.integrate(parsed.sympy_expr, (sym_var, sym_lower, sym_upper))
 
+        # Resultado complejo: la función no es real en todo el intervalo (sqrt(x) en [-1, 1]
+        # devolvía «2/3 + 2*I/3» como área).
         try:
-            num_val = float(result_sym.evalf())
-        except (TypeError, ValueError):
-            num_val = None
-
-        # Detectar resultado no finito (integral divergente)
-        if num_val is not None and not _math.isfinite(num_val):
+            as_complex = complex(result_sym.evalf())
+        except Exception:  # noqa: BLE001 - Integral sin resolver (floor) rompe evalf de SymPy
+            as_complex = None
+        if as_complex is not None and abs(as_complex.imag) > 1e-9 * max(1.0, abs(as_complex.real)):
             return NumericResult(
                 value=None,
                 exact_plain_text=str(result_sym),
                 exact_latex=sympy.latex(result_sym),
                 is_success=False,
                 error_message=(
-                    "La integral no converge (resultado no finito). "
+                    "El resultado es complejo: la función no es real en todo el intervalo. "
+                    "Ajuste los límites al dominio de la función."
+                ),
+            )
+
+        from integrallab.core.solids import _numeric_value
+
+        num_val = _numeric_value(result_sym)  # integra numéricamente si SymPy no pudo
+
+        # Detectar resultado no finito (integral divergente)
+        if num_val is not None and not _math.isfinite(num_val):
+            # exp(1000*x) en [0, 1] vale ≈ 1,97e431: converge, pero no cabe en un float. Antes se
+            # informaba como «no converge», que es falso y manda a buscar singularidades inexistentes.
+            overflow_only = not result_sym.has(
+                sympy.oo, -sympy.oo, sympy.zoo, sympy.nan, sympy.Integral
+            )
+            return NumericResult(
+                value=None,
+                exact_plain_text=str(result_sym),
+                exact_latex=sympy.latex(result_sym),
+                is_success=False,
+                error_message=(
+                    f"El resultado es finito (≈ {sympy.N(result_sym, 6)}) pero excede el rango de los "
+                    "números de punto flotante. Reduzca el intervalo o la escala de la función."
+                    if overflow_only
+                    else "La integral no converge (resultado no finito). "
                     "Verifique que la función no tenga singularidades en el intervalo."
                 ),
             )

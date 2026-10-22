@@ -119,3 +119,63 @@ def test_parser_blocks_spaced_attribute_access() -> None:
 
     with pytest.raises(ExpressionParseError):
         parse_math_expression("x. __class__")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regresión: congelamiento de la UI con potencias y literales gigantes
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "9**9**9**9",
+        "10**10**10",
+        "x**(10**5)",
+        "x**999999",
+        "1e99999999",
+        "x*1e99999999",
+        "1e-99999999",
+        "x+" * 600 + "x",
+    ],
+)
+def test_parse_rejects_huge_inputs_quickly(text: str) -> None:
+    """Entradas que antes congelaban la app deben rechazarse de inmediato."""
+    import time
+
+    start = time.perf_counter()
+    with pytest.raises(ExpressionParseError):
+        parse_math_expression(text)
+    assert time.perf_counter() - start < 2.0
+
+
+@pytest.mark.parametrize("text", ["2**3**2", "x**100", "10**400", "1e300", "2.5e-3*x", "x^x^x"])
+def test_parse_accepts_reasonable_powers_and_literals(text: str) -> None:
+    """Los límites de tamaño no deben bloquear entradas legítimas."""
+    assert parse_math_expression(text).sympy_expr is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regresión: la coma decimal no debe corromper funciones con varios argumentos
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("max(1,2)*x", "2*x"),
+        ("min(3,4)*x", "3*x"),
+        ("root(8,3)", "2"),
+        ("log(8,2)", "3"),
+        ("0,5*x", "0.5*x"),
+        ("2,5x", "2.5*x"),
+        ("x^2 + 3,5", "x**2 + 3.5"),
+        ("x*(1,5)", "1.5*x"),
+    ],
+)
+def test_decimal_comma_vs_function_arguments(text: str, expected: str) -> None:
+    assert parse_math_expression(text).plain_text == expected
+
+
+def test_comma_separated_number_list_is_rejected() -> None:
+    """'1,2,3' ya no produce un valor sin sentido (0.36): es una expresión inválida."""
+    with pytest.raises(ExpressionParseError):
+        parse_math_expression("1,2,3")

@@ -15,6 +15,7 @@ operaciones de indexación y palabras clave de ejecución.
 from __future__ import annotations
 
 import ast
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -177,12 +178,135 @@ def _validate_safety(text: str) -> None:
             )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Límites de tamaño (evitan congelar la aplicación con entradas como 9**9**9**9)
+# ─────────────────────────────────────────────────────────────────────────────
+
+MAX_EXPRESSION_LENGTH = 1000
+MAX_POW_EXPONENT = 10_000   # |exponente| máximo en una potencia numérica
+MAX_POW_DIGITS = 5_000      # cifras máximas estimadas del resultado de una potencia numérica
+
+_NUMBER_WRAPPERS = frozenset({"Integer", "Float", "Rational", "Number"})
+_NAMED_CONSTANTS = {"pi": math.pi, "E": math.e}
+
+
+def _estimate_constant(node: ast.AST) -> float | None:
+    """Estima el valor numérico de un subárbol constante; ``None`` si no es constante.
+
+    Los desbordamientos de ``float`` se representan con ``inf`` para que una torre de
+    potencias (9**9**9**9) se detecte sin llegar a calcularla.
+    """
+    if isinstance(node, ast.Constant):
+        value = node.value
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float, str)):
+            try:
+                return float(value)
+            except OverflowError:
+                return math.inf
+            except ValueError:
+                return None
+        return None
+    if isinstance(node, ast.Call):
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id in _NUMBER_WRAPPERS
+            and node.args
+            and not node.keywords
+        ):
+            values = [_estimate_constant(arg) for arg in node.args]
+            if any(v is None for v in values):
+                return None
+            if node.func.id == "Rational" and len(values) == 2:
+                return values[0] / values[1] if values[1] else None
+            return values[0]
+        return None
+    if isinstance(node, ast.Name):
+        return _NAMED_CONSTANTS.get(node.id)
+    if isinstance(node, ast.UnaryOp):
+        operand = _estimate_constant(node.operand)
+        if operand is None:
+            return None
+        if isinstance(node.op, ast.USub):
+            return -operand
+        if isinstance(node.op, ast.UAdd):
+            return operand
+        return None
+    if isinstance(node, ast.BinOp):
+        left = _estimate_constant(node.left)
+        right = _estimate_constant(node.right)
+        if left is None or right is None:
+            return None
+        try:
+            if isinstance(node.op, ast.Add):
+                result = left + right
+            elif isinstance(node.op, ast.Sub):
+                result = left - right
+            elif isinstance(node.op, ast.Mult):
+                result = left * right
+            elif isinstance(node.op, ast.Div):
+                result = left / right
+            elif isinstance(node.op, ast.Pow):
+                result = left ** right
+            else:
+                return None
+        except OverflowError:
+            return math.inf
+        except (ZeroDivisionError, ValueError):
+            return None
+        if isinstance(result, complex) or math.isnan(result):
+            return None
+        return float(result)
+    return None
+
+
+MAX_LITERAL_EXPONENT = 300  # notación científica: 1e300 sí, 1e99999999 no
+
+
+def _validate_numeric_sizes(tree: ast.AST) -> None:
+    """Rechaza literales y potencias numéricas cuyo cálculo exacto congelaría la aplicación.
+
+    SymPy convierte 1e99999999 en un entero exacto de 100 millones de cifras, y 9**9**9**9
+    en una potencia imposible de evaluar; ambos bloquearían la interfaz.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            match = re.fullmatch(r"\s*[+-]?[\d.]+[eE]([+-]?\d+)\s*", node.value)
+            if match and abs(int(match.group(1))) > MAX_LITERAL_EXPONENT:
+                raise ExpressionParseError(
+                    f"Número fuera de rango: el exponente en notación científica no puede "
+                    f"superar ±{MAX_LITERAL_EXPONENT}."
+                )
+        if isinstance(node, ast.Constant) and isinstance(node.value, float) and math.isinf(node.value):
+            raise ExpressionParseError("Número fuera de rango (infinito).")
+        if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow)):
+            continue
+        exponent = _estimate_constant(node.right)
+        if exponent is None:
+            continue
+        if abs(exponent) > MAX_POW_EXPONENT:
+            raise ExpressionParseError(
+                f"Exponente demasiado grande: el límite es {MAX_POW_EXPONENT:,}. "
+                "Esto evita que la aplicación se congele al calcular potencias gigantes."
+            )
+        base = _estimate_constant(node.left)
+        if base is not None and math.isfinite(base) and abs(base) not in (0.0, 1.0):
+            if abs(exponent) * math.log10(abs(base)) > MAX_POW_DIGITS:
+                raise ExpressionParseError(
+                    f"El resultado de la potencia tendría más de {MAX_POW_DIGITS:,} cifras; "
+                    "reduzca la base o el exponente."
+                )
+
+
 def _validate_code_ast(code_str: str) -> None:
     """Valida la estructura sintáctica del árbol AST generado antes de evaluarlo."""
     try:
         tree = ast.parse(code_str, mode="eval")
     except Exception as exc:
         raise ExpressionParseError(f"Error de sintaxis en la expresión: {exc}") from exc
+
+    _validate_numeric_sizes(tree)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
@@ -280,6 +404,45 @@ def _replace_log_base(text: str, placeholder: str, base: int) -> str:
     return text
 
 
+# Funciones cuyos argumentos se separan con coma: allí "1,2" son dos argumentos, no 1.2
+_MULTI_ARG_FUNCTIONS = frozenset({"max", "min", "Max", "Min", "atan2", "root", "log"})
+
+
+def _convert_decimal_commas(text: str) -> str:
+    """Convierte la coma decimal es-CO (0,5 → 0.5) sin romper listas de argumentos.
+
+    Solo se convierte una coma entre dígitos si:
+    - no está dentro de los paréntesis de una función de varios argumentos
+      (``max(1,2)``, ``atan2(1,2)``, ``root(8,3)``, ``log(8,2)``), y
+    - el número a su izquierda no tiene ya parte decimal (``1,2,3`` → ``1.2,3``, que luego
+      se rechaza como expresión inválida en vez de producir un valor sin sentido).
+    """
+    out: list[str] = []
+    in_multi_arg: list[bool] = []
+    for i, ch in enumerate(text):
+        if ch == "(":
+            m = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", text[:i])
+            in_multi_arg.append(bool(m) and m.group(1) in _MULTI_ARG_FUNCTIONS)
+        elif ch == ")":
+            if in_multi_arg:
+                in_multi_arg.pop()
+        elif (
+            ch == ","
+            and 0 < i < len(text) - 1
+            and text[i - 1].isdecimal()
+            and text[i + 1].isdecimal()
+            and not (in_multi_arg and in_multi_arg[-1])
+        ):
+            j = len(out) - 1
+            while j >= 0 and out[j].isdecimal():
+                j -= 1
+            if not (j >= 0 and out[j] == "."):
+                out.append(".")
+                continue
+        out.append(ch)
+    return "".join(out)
+
+
 def _normalize_expression(text: str) -> str:
     """Normaliza una expresión en castellano (es-CO) a sintaxis SymPy.
 
@@ -295,8 +458,8 @@ def _normalize_expression(text: str) -> str:
     """
     s = text.strip()
 
-    # 1. Coma decimal entre dígitos: "0,5" → "0.5"
-    s = re.sub(r'(?<=\d),(?=\d)', '.', s)
+    # 1. Coma decimal entre dígitos: "0,5" → "0.5" (no en argumentos de max(1,2), atan2(1,2)...)
+    s = _convert_decimal_commas(s)
 
     # 2. Superíndices
     s = s.replace('²', '**2').replace('³', '**3')
@@ -401,6 +564,11 @@ def parse_math_expression(text: str) -> ParsedExpression:
     clean_text = text.strip()
     if not clean_text:
         raise ExpressionParseError("La expresión matemática no puede estar vacía.")
+    if len(clean_text) > MAX_EXPRESSION_LENGTH:
+        raise ExpressionParseError(
+            f"La expresión es demasiado larga ({len(clean_text)} caracteres; "
+            f"máximo {MAX_EXPRESSION_LENGTH})."
+        )
 
     if not _SYMPY_AVAILABLE:
         # Modo degradado: retorna información básica sin cálculo simbólico
@@ -478,15 +646,34 @@ def parse_numeric_or_symbolic(val: object) -> sympy.Expr:
     return parsed.sympy_expr
 
 
+_PT_NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+_PT_PAREN = rf"\(\s*{_PT_NUM}\s*,\s*{_PT_NUM}\s*\)"
+_PT_BRACKET = rf"\[\s*{_PT_NUM}\s*,\s*{_PT_NUM}\s*\]"
+_PT_PLAIN = rf"{_PT_NUM}(?:\s*,\s*|\s+){_PT_NUM}"
+_POINTS_PATTERNS = (
+    # (0, 1), (1, 2) · también separados por ';' o espacios
+    re.compile(rf"\s*{_PT_PAREN}(?:\s*[,;]?\s*{_PT_PAREN})*\s*[,;]?\s*"),
+    # [0, 1]; [1, 2]
+    re.compile(rf"\s*{_PT_BRACKET}(?:\s*[,;]?\s*{_PT_BRACKET})*\s*[,;]?\s*"),
+    # 0, 1; 1, 2  (al menos dos pares)
+    re.compile(rf"\s*{_PT_PLAIN}(?:\s*;\s*{_PT_PLAIN})+\s*;?\s*"),
+    # 0 1\n1 2  (una línea por punto)
+    re.compile(rf"\s*{_PT_PLAIN}(?:\s*\n\s*{_PT_PLAIN})+\s*"),
+)
+
+
 def is_points_input(text: str) -> bool:
-    """Determina si la entrada de texto corresponde a un conjunto de puntos discretos."""
+    """Determina si la entrada de texto corresponde a un conjunto de puntos discretos.
+
+    El texto COMPLETO debe tener forma de lista de pares numéricos. Antes bastaba con que
+    hubiera paréntesis y una coma, así que expresiones válidas como ``max(1,2)*x``,
+    ``log(x,2)``, ``atan2(x,1)`` o ``0,5*(x+1)`` (coma decimal es-CO) se desviaban al lector
+    de puntos y la interfaz mostraba un error de interpolación.
+    """
     clean = text.strip()
     if not clean:
         return False
-    has_parens = "(" in clean and ")" in clean and "," in clean
-    has_brackets = "[" in clean and "]" in clean and "," in clean
-    has_semis = ";" in clean and ("," in clean or " " in clean)
-    return has_parens or has_brackets or has_semis
+    return any(p.fullmatch(clean) for p in _POINTS_PATTERNS)
 
 
 def parse_points(text: str) -> list[tuple[float, float]]:
