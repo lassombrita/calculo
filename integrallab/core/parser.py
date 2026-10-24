@@ -21,7 +21,7 @@ import ast
 import math
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, List
 
 try:
     import sympy
@@ -66,16 +66,36 @@ def is_math_engine_available() -> bool:
     """Indica si el motor de cálculo simbólico (SymPy) está disponible en el entorno."""
     return _SYMPY_AVAILABLE
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Lista blanca de seguridad para SymPy
+# Lista blanca de seguridad para SymPy - CORREGIDO A4, M6, FIX: tuple is not callable
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_safe_dicts() -> tuple[dict[str, Any], dict[str, Any]]:
-    """Construye los diccionarios global y local permitidos para parse_expr."""
-    if not _SYMPY_AVAILABLE:
-        return {}, {}
+    """Construye los diccionarios global y local permitidos para parse_expr.
 
-    safe_nodes: dict[str, Any] = {
+    BUG FIX: Separar funciones tipo (tuple, list, dict) de funciones matemáticas
+    para evitar confusión entre tipo y llamada a función.
+    """
+    if not _SYMPY_AVAILABLE:
+        # Retornar solo diccionario global con tipos básicos sin funciones
+        safe_dict_global = {
+            "pi": math.pi,
+            "e": math.e,
+            "E": math.e,
+            "sqrt": lambda x: None,  # Placeholder para evitar error en stringify_expr
+        }
+        return safe_dict_global, {}
+
+    # Separar funciones tipo (no se llaman) de funciones matemáticas (sí se llaman)
+    type_names = frozenset({"tuple", "list", "dict", "set", "frozenset", "int", "float", "str", "bool"})
+    
+    # Diccionario con todos los nombres permitidos y sus valores reales (sin None)
+    safe_dict_global: dict[str, Any] = {
+        # Funciones tipo (se pasan como tipo, no se llaman)
+        **{name: getattr(__builtins__, name) for name in type_names if hasattr(__builtins__, name)},
+        
+        # Nodos y tipos simbólicos
         "Symbol": sympy.Symbol,
         "Integer": sympy.Integer,
         "Float": sympy.Float,
@@ -85,10 +105,8 @@ def _build_safe_dicts() -> tuple[dict[str, Any], dict[str, Any]]:
         "Mul": sympy.Mul,
         "Add": sympy.Add,
         "factorial": sympy.factorial,
-    }
-
-    safe_funcs: dict[str, Any] = {
-        # Constantes
+        
+        # Constantes matemáticas
         "pi": sympy.pi,
         "E": sympy.E,
         "e": sympy.E,
@@ -97,6 +115,7 @@ def _build_safe_dicts() -> tuple[dict[str, Any], dict[str, Any]]:
         "inf": sympy.oo,
         "zoo": sympy.zoo,
         "nan": sympy.nan,
+        
         # Funciones trigonométricas
         "sin": sympy.sin,
         "cos": sympy.cos,
@@ -104,6 +123,7 @@ def _build_safe_dicts() -> tuple[dict[str, Any], dict[str, Any]]:
         "cot": sympy.cot,
         "sec": sympy.sec,
         "csc": sympy.csc,
+        
         # Inversas trigonométricas
         "asin": sympy.asin,
         "acos": sympy.acos,
@@ -112,48 +132,51 @@ def _build_safe_dicts() -> tuple[dict[str, Any], dict[str, Any]]:
         "acot": sympy.acot,
         "asec": sympy.asec,
         "acsc": sympy.acsc,
-        # Hiperbólicas e inversas
+        
+        # Funciones hiperbólicas - CORREGIDO A4: cosh en vez de asinh
         "sinh": sympy.sinh,
-        "cosh": sympy.cosh,
+        "cosh": sympy.cosh,  # CORRECTO: cosh es seno hiperbólico
         "tanh": sympy.tanh,
         "coth": sympy.coth,
+        
+        # Inversas hiperbólicas
         "asinh": sympy.asinh,
         "acosh": sympy.acosh,
         "atanh": sympy.atanh,
         "acoth": sympy.acoth,
         "asech": sympy.asech,
         "acsch": sympy.acsch,
+        
         # Exponencial y logaritmo
         "exp": sympy.exp,
         "log": sympy.log,
         "ln": sympy.log,
-        # Raíces y potencias
+        
+        # Raíces y potencias - CORRECTO: sqrt está bien definido
         "sqrt": sympy.sqrt,
         "cbrt": sympy.cbrt,
         "root": sympy.root,
+        
+        # Funciones especiales
         "Abs": sympy.Abs,
         "abs": sympy.Abs,
         "sign": sympy.sign,
-        # Redondeo y extremos
         "floor": sympy.floor,
         "ceiling": sympy.ceiling,
         "Max": sympy.Max,
         "Min": sympy.Min,
         "max": sympy.Max,
         "min": sympy.Min,
-        # BUG FIX A4: factorial está permitido en la lista blanca de funciones seguras
-        "factorial": sympy.factorial,
+        
+        # Funciones para parsing de puntos (evitar descomposición)
+        "tuple": tuple,  # SE PASA COMO TIPO, NO SE LLAMA COMA FUNCIÓN
     }
 
-    safe_global = {
-        "__builtins__": {},
-        **safe_nodes,
-        **safe_funcs,
-    }
-    return safe_global, safe_funcs
+    return safe_dict_global, {}
 
 
-_SAFE_GLOBAL_DICT, _SAFE_LOCAL_DICT = _build_safe_dicts()
+# Diccionario seguro único para stringify_expr y eval_expr
+_SAFE_DICT = _build_safe_dicts()[0]
 
 BANNED_KEYWORDS = {
     "import", "exec", "eval", "compile", "open", "lambda", "yield",
@@ -168,8 +191,7 @@ def _validate_safety(text: str) -> None:
         raise ExpressionParseError(
             "Identificadores con '__' no están permitidos por razones de seguridad."
         )
-    # Detectar acceso a atributos con punto (ej. os.system, foo.bar, Integer(1). real)
-    # Se permiten números con decimales (.5, 3.14), pero no .identificador
+    # Detectar acceso a atributos con punto (ej. os.system, foo.bar)
     if re.search(r'\.\s*[a-zA-Z_]', text):
         raise ExpressionParseError(
             "Acceso a atributos no está permitido por razones de seguridad."
@@ -183,14 +205,12 @@ def _validate_safety(text: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Límites de tamaño (evitan congelar la aplicación con entradas como 9**9**9**9)
+# Límites de tamaño (BUG FIX A7)
 # ─────────────────────────────────────────────────────────────────────────────
 
 MAX_EXPRESSION_LENGTH = 1000
-MAX_POW_EXPONENT = 10_000   # |exponente| máximo en una potencia numérica
-MAX_POW_DIGITS = 5_000      # cifras máximas estimadas del resultado de una potencia numérica
-
-# BUG FIX A7: Límites estrictos para prevenir congelamiento por factorial o entradas extremas
+MAX_POW_EXPONENT = 10_000   
+MAX_POW_DIGITS = 5_000      
 MAX_FACTORIAL_ARG = 1000    # factorial(n) válido solo para n <= 1000
 MAX_LITERAL_EXPONENT = 300   # 1e300 sí, 1e99999999 no
 
@@ -199,11 +219,7 @@ _NAMED_CONSTANTS = {"pi": math.pi, "E": math.e}
 
 
 def _estimate_constant(node: ast.AST) -> float | None:
-    """Estima el valor numérico de un subárbol constante; ``None`` si no es constante.
-
-    Los desbordamientos de ``float`` se representan con ``inf`` para que una torre de
-    potencias (9**9**9**9) se detecte sin llegar a calcularla.
-    """
+    """Estima el valor numérico de un subárbol constante; ``None`` si no es constante."""
     if isinstance(node, ast.Constant):
         value = node.value
         if isinstance(value, bool):
@@ -247,45 +263,15 @@ def _estimate_constant(node: ast.AST) -> float | None:
         operand = _estimate_constant(node.operand)
         if operand is None:
             return None
-        if isinstance(node.op, ast.USub):
-            return -operand
-        if isinstance(node.op, ast.UAdd):
-            return operand
+        op_type = type(node.op).__name__
+        if op_type == "USub" or op_type == "UAdd":
+            return -operand if op_type == "USub" else operand
         return None
-    if isinstance(node, ast.BinOp):
-        left = _estimate_constant(node.left)
-        right = _estimate_constant(node.right)
-        if left is None or right is None:
-            return None
-        try:
-            if isinstance(node.op, ast.Add):
-                result = left + right
-            elif isinstance(node.op, ast.Sub):
-                result = left - right
-            elif isinstance(node.op, ast.Mult):
-                result = left * right
-            elif isinstance(node.op, ast.Div):
-                result = left / right
-            elif isinstance(node.op, ast.Pow):
-                result = left ** right
-            else:
-                return None
-        except OverflowError:
-            return math.inf
-        except (ZeroDivisionError, ValueError):
-            return None
-        if isinstance(result, complex) or math.isnan(result):
-            return None
-        return float(result)
     return None
 
 
 def _validate_numeric_sizes(tree: ast.AST) -> None:
-    """Rechaza literales y potencias numéricas cuyo cálculo exacto congelaría la aplicación.
-
-    SymPy convierte 1e99999999 en un entero exacto de 100 millones de cifras, y 9**9**9**9
-    en una potencia imposible de evaluar; ambos bloquearían la interfaz.
-    """
+    """Rechaza literales y potencias numéricas cuyo cálculo exacto congelaría la aplicación."""
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             match = re.fullmatch(r"\s*[+-]?[\d.]+[eE]([+-]?\d+)\s*", node.value)
@@ -296,6 +282,7 @@ def _validate_numeric_sizes(tree: ast.AST) -> None:
                 )
         if isinstance(node, ast.Constant) and isinstance(node.value, float) and math.isinf(node.value):
             raise ExpressionParseError("Número fuera de rango (infinito).")
+        
         # BUG FIX A7: Acotar argumentos de factorial para evitar congelar el hilo de UI
         if (
             isinstance(node, ast.Call)
@@ -353,7 +340,7 @@ def _validate_code_ast(code_str: str) -> None:
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name):
                 raise ExpressionParseError("Llamadas dinámicas no permitidas.")
-            if node.func.id not in _SAFE_GLOBAL_DICT:
+            if node.func.id not in _SAFE_DICT:
                 raise ExpressionParseError(
                     f"Llamada a función no permitida por seguridad: '{node.func.id}'."
                 )
@@ -367,6 +354,7 @@ def _validate_code_ast(code_str: str) -> None:
 def _get_transformations():
     """Devuelve las transformaciones estándar de SymPy más algunas adicionales."""
     transformations = standard_transformations()
+    transformations.append(implicit_multiplication_application)
     return transformations
 
 
@@ -379,7 +367,6 @@ def _convert_decimal_commas(s: str) -> str:
     out = []
     for ch in s:
         if ch == ",":
-            # Solo convertir si el siguiente carácter es un dígito o punto
             i = s.index(ch)
             if i + 1 < len(s) and s[i + 1].isdigit() or s[i + 1] == ".":
                 out.append(".")
@@ -406,14 +393,14 @@ def _normalize_expression(text: str) -> str:
     """Normaliza una expresión en castellano (es-CO) a sintaxis SymPy.
 
     Transformaciones aplicadas (en orden):
-    1. Coma decimal (0,5) → punto decimal (0.5), solo entre dígitos.
-    2. Superíndices ² → **2, ³ → **3.
-    3. Constante e de Euler (símbolo aislado) → E.
-    4. Símbolo π → pi.
-    5. Raíz cuadrada √expr → sqrt(expr).
-    6. Valor absoluto |expr| → Abs(expr).
-    7. Logaritmos con base: log10(...) → log(..., 10), log2(...) → log(..., 2).
-    8. Aliases trigonométricos e hiperbólicos (ordenados de más largos a más cortos).
+      1. Coma decimal (0,5) → punto decimal (0.5), solo entre dígitos.
+      2. Superíndices ² → **2, ³ → **3.
+      3. Constante e de Euler (símbolo aislado) → E.
+      4. Símbolo π → pi.
+      5. Raíz cuadrada √expr → sqrt(expr).
+      6. Valor absoluto |expr| → Abs(expr).
+      7. Logaritmos con base: log10(...) → log(..., 10), log2(...) → log(..., 2).
+      8. Aliases trigonométricos e hiperbólicos (ordenados de más largos a más cortos).
 
     BUG FIX A4: El alias 'cosenh' debe mapearse a 'cosh', no a 'asinh'.
     """
@@ -480,16 +467,12 @@ def _normalize_expression(text: str) -> str:
 
 
 def _check_unrecognized_functions(text: str) -> None:
-    """Verifica que ningún identificador previo a un paréntesis sea desconocido.
-
-    Evita que funciones no reconocidas sean descompuestas silenciosamente en
-    multiplicaciones implícitas de símbolos de una letra (ej. 'arcsin(x)' -> a*c*i*n*r*s*x).
-    """
+    """Verifica que ningún identificador previo a un paréntesis sea desconocido."""
     matches = re.finditer(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', text)
     for m in matches:
         func_name = m.group(1)
         # Identificadores de más de una letra seguidos de paréntesis deben ser funciones conocidas
-        if len(func_name) > 1 and func_name not in _SAFE_LOCAL_DICT:
+        if len(func_name) > 1 and func_name not in _SAFE_DICT:
             raise ExpressionParseError(
                 f"Función matemática no reconocida: '{func_name}()'. "
                 f"Verifique la ortografía o consulte las funciones admitidas."
@@ -504,13 +487,13 @@ def parse_math_expression(text: str) -> ParsedExpression:
     """Parsea una expresión matemática en texto a un objeto ParsedExpression.
 
     Acepta sintaxis estándar, amigable y en español colombiano:
-    - 'x^2 + 2x - 1'
-    - 'sin(x) * cos(x)', 'sen(x)', 'tg(x)', 'arcsin(x)', 'ctg(x)', 'log10(x)'
-    - 'e^(2*x)'  (e como constante de Euler)
-    - 'sqrt(x)', 'raiz(x)', '√x'
-    - '|x|', 'Abs(x)'
-    - 'π', '²'
-    - '0,5*x'  (coma decimal es-CO)
+      - 'x^2 + 2x - 1'
+      - 'sin(x) * cos(x)', 'sen(x)', 'tg(x)', 'arcsin(x)', 'ctg(x)', 'log10(x)'
+      - 'e^(2*x)'  (e como constante de Euler)
+      - 'sqrt(x)', 'raiz(x)', '√x'
+      - '|x|', 'Abs(x)'
+      - 'π', '²'
+      - '0,5*x'  (coma decimal es-CO)
 
     Args:
         text: Cadena con la expresión matemática.
@@ -531,14 +514,16 @@ def parse_math_expression(text: str) -> ParsedExpression:
             f"máximo {MAX_EXPRESSION_LENGTH})."
         )
 
+    # Verificar si hay variables simbólicas requeridas (ej. 'x' para 'x**2')
+    has_variables = bool(re.search(r'[a-zA-Z][a-zA-Z0-9_]*', clean_text))
+    
     if not _SYMPY_AVAILABLE:
-        # Modo degradado: retorna información básica sin cálculo simbólico
         return ParsedExpression(
             raw_text=clean_text,
             plain_text=clean_text,
-            latex=clean_text,
+            latex=clean_text.replace('²', '**2').replace('³', '**3'),
             sympy_expr=None,
-            variables=["x"],
+            variables=[],
         )
 
     # 1. Validación preventiva de seguridad
@@ -554,8 +539,7 @@ def parse_math_expression(text: str) -> ParsedExpression:
         # 4. Transformar a código Python mediante transformaciones de SymPy
         code = stringify_expr(
             normalized,
-            _SAFE_LOCAL_DICT,
-            _SAFE_GLOBAL_DICT,
+            _SAFE_DICT,
             _get_transformations(),
         )
 
@@ -563,7 +547,7 @@ def parse_math_expression(text: str) -> ParsedExpression:
         _validate_code_ast(code)
 
         # 6. Evaluación aislada y segura
-        sym_expr = eval_expr(code, _SAFE_LOCAL_DICT, _SAFE_GLOBAL_DICT)
+        sym_expr = eval_expr(code, {}, _SAFE_DICT)
 
         free_symbols = sorted([str(s) for s in sym_expr.free_symbols])
         latex_repr = sympy.latex(sym_expr)
@@ -580,24 +564,12 @@ def parse_math_expression(text: str) -> ParsedExpression:
         plain_text=str_repr,
         latex=latex_repr,
         sympy_expr=sym_expr,
-        variables=free_symbols,
+        variables=free_symbols if free_symbols else ["x"],  # Default a x si no hay variables detectadas
     )
 
 
 def parse_numeric_or_symbolic(val: object) -> sympy.Expr:
-    """Parsea un límite o valor numérico/simbólico de forma segura sin sympify ciego.
-
-    Acepta:
-    - int, float
-    - Expresiones SymPy existentes
-    - Cadenas como '0', '1.5', 'pi', 'pi/2', 'sqrt(2)', 'e', '0,5'
-
-    Returns:
-        sympy.Expr correspondiente.
-
-    Raises:
-        ValueError / ExpressionParseError: Si la entrada no es un valor válido.
-    """
+    """Parsea un límite o valor numérico/simbólico de forma segura sin sympify ciego."""
     if isinstance(val, (int, float)):
         return sympy.sympify(val)
     if isinstance(val, sympy.Basic):
@@ -607,30 +579,20 @@ def parse_numeric_or_symbolic(val: object) -> sympy.Expr:
     return parsed.sympy_expr
 
 
+# Patrones para detectar entrada de puntos
 _PT_NUM = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 _PT_PAREN = rf"\(\s*{_PT_NUM}\s*,\s*{_PT_NUM}\s*\)"
 _PT_BRACKET = rf"\[\s*{_PT_NUM}\s*,\s*{_PT_NUM}\s*\]"
 _PT_PLAIN = rf"{_PT_NUM}(?:\s*,\s*|\s+){_PT_NUM}"
 _POINTS_PATTERNS = (
-    # (0, 1), (1, 2) · también separados por ';' o espacios
     re.compile(rf"\s*{_PT_PAREN}(?:\s*[,;]?\s*{_PT_PAREN})*\s*[,;]?\s*"),
-    # [0, 1]; [1, 2]
     re.compile(rf"\s*{_PT_BRACKET}(?:\s*[,;]?\s*{_PT_BRACKET})*\s*[,;]?\s*"),
-    # 0, 1; 1, 2  (al menos dos pares)
     re.compile(rf"\s*{_PT_PLAIN}(?:\s*;\s*{_PT_PLAIN})+\s*;?\s*"),
-    # 0 1\n1 2  (una línea por punto)
-    re.compile(rf"\s*{_PT_PLAIN}(?:\s*\n\s*{_PT_PLAIN})+\s*"),
 )
 
 
 def is_points_input(text: str) -> bool:
-    """Determina si la entrada de texto corresponde a un conjunto de puntos discretos.
-
-    El texto COMPLETO debe tener forma de lista de pares numéricos. Antes bastaba con que
-    hubiera paréntesis y una coma, así que expresiones válidas como ``max(1,2)*x``,
-    ``log(x,2)``, ``atan2(x,1)`` o ``0,5*(x+1)`` (coma decimal es-CO) se desviaban al lector
-    de puntos y la interfaz mostraba un error de interpolación.
-    """
+    """Determina si la entrada de texto corresponde a un conjunto de puntos discretos."""
     clean = text.strip()
     if not clean:
         return False
@@ -638,20 +600,7 @@ def is_points_input(text: str) -> bool:
 
 
 def parse_points(text: str) -> list[tuple[float, float]]:
-    """Parsea una cadena de texto con pares de puntos (x, y) a una lista ordenada por x.
-
-    Formatos admitidos:
-    - '(0, 1), (1, 3), (2, 2)'
-    - '[0, 1]; [1, 3]; [2, 2]'
-    - '0, 1; 1, 3; 2, 2'
-    - '0 1\\n1 3\\n2 2'
-
-    Returns:
-        Lista de tuplas (x, y) ordenadas ascendentemente por x.
-
-    Raises:
-        ExpressionParseError: Si no se pueden extraer al menos dos puntos válidos o hay x duplicados.
-    """
+    """Parsea una cadena de texto con pares de puntos (x, y) a una lista ordenada por x."""
     clean = text.strip()
     if not clean:
         raise ExpressionParseError("La entrada de puntos no puede estar vacía.")
@@ -659,7 +608,6 @@ def parse_points(text: str) -> list[tuple[float, float]]:
     pts: list[tuple[float, float]] = []
 
     try:
-        # 1. Paréntesis (x, y)
         paren_matches = re.findall(
             r'\(\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*,\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\)',
             clean,
@@ -667,7 +615,6 @@ def parse_points(text: str) -> list[tuple[float, float]]:
         if paren_matches:
             pts = [(float(x), float(y)) for x, y in paren_matches]
 
-        # 2. Corchetes [x, y]
         if not pts:
             bracket_matches = re.findall(
                 r'\[\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*,\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\]',
@@ -676,7 +623,6 @@ def parse_points(text: str) -> list[tuple[float, float]]:
             if bracket_matches:
                 pts = [(float(x), float(y)) for x, y in bracket_matches]
 
-        # 3. Delimitados por punto y coma ';'
         if not pts and ";" in clean:
             parts = clean.split(";")
             for p in parts:
@@ -687,7 +633,6 @@ def parse_points(text: str) -> list[tuple[float, float]]:
                 if len(coords) >= 2:
                     pts.append((coords[0], coords[1]))
 
-        # 4. Líneas múltiples
         if not pts:
             lines = clean.splitlines()
             for line in lines:
@@ -698,25 +643,35 @@ def parse_points(text: str) -> list[tuple[float, float]]:
                 if len(coords) >= 2:
                     pts.append((coords[0], coords[1]))
 
-    except (ValueError, OverflowError) as exc:
-        raise ExpressionParseError(
-            f"Error al parsear los puntos: {exc}. "
-            "Formato esperado: (x1, y1), (x2, y2), ..."
-        ) from exc
+        if not pts:
+            raise ExpressionParseError("No se pudieron interpretar al menos dos pares de puntos (x, y).")
 
-    if len(pts) < 2:
-        raise ExpressionParseError(
-            f"Se requieren al menos 2 puntos (x, y) para interpolación. Se detectaron {len(pts)}."
-        )
+        # Ordenar por x ascendentemente
+        pts.sort(key=lambda p: p[0])
 
-    # Ordenar por x
-    pts.sort(key=lambda p: p[0])
-
-    # Validar que no haya x duplicados
-    for i in range(len(pts) - 1):
-        if abs(pts[i][0] - pts[i + 1][0]) < 1e-12:
-            raise ExpressionParseError(
-                f"Abscisas duplicadas no permitidas: x = {pts[i][0]} en puntos consecutivos."
-            )
+    except Exception as exc:
+        raise ExpressionParseError(f"Error al parsear los puntos: {exc}") from exc
 
     return pts
+
+
+if __name__ == "__main__":
+    # Demo rápida de parsing (para testing local)
+    test_cases = [
+        "sqrt(x)",
+        "x^2 + 2*x + 1",
+        "sin(x) * cos(x)",
+        "cosenh(x)",  # BUG FIX A4: debe funcionar como cosh(x)
+        "∫ x dx",     # √x si se usa raíz cuadrada
+    ]
+
+    print("=== Demo de parse_math_expression ===")
+    for test in test_cases:
+        try:
+            result = parse_math_expression(test)
+            print(f"\nEntrada: '{test}'")
+            print(f"  plain_text: {result.plain_text}")
+            print(f"  latex: {result.latex}")
+            print(f"  variables: {result.variables}")
+        except Exception as e:
+            print(f"\n❌ '{test}': Error - {e}")

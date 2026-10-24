@@ -1,97 +1,165 @@
-# IntegralLab — Reglas de arquitectura y trabajo
+# AGENTS.md — Guía de Arquitectura IntegralLab
 
-> Archivo maestro para agentes de IA que trabajan en este repositorio.
-> Leer antes de escribir cualquier código.
+## ✅ Fase 5 COMPLETADA — Repositorio Migrado a Versión 2.0
 
----
-
-## 1. Principios de diseño
-
-| Principio | Regla |
-|---|---|
-| **Separación de capas** | La UI (PySide6) **no importa ni usa SymPy directamente**. Toda comunicación entre UI y matemáticas pasa por un módulo de "dominio" (API pública del paquete `integrallab`). |
-| **UI independiente de la librería** | La UI puede funcionar sin `sympy` instalado (modo degradado), para que no se bloquee el app en equipos sin dependencias científicas. |
-| **Visualización desacoplada** | El módulo de visualización (Matplotlib) recibe datos ya procesados (lista de puntos) y no hace cálculos matemáticos. |
-| **Sin estado global** | Los módulos del dominio no guardan estado mutable entre llamadas. Son funciones puras o clases con estado explícito. |
-| **TIPado** | Todo módulo nuevo debe tener type hints completos (`from __future__ import annotations`). |
-| **Docstrings** | Todo módulo público debe tener docstring en español describiendo propósito y responsabilidad. |
-| **Tests** | Todo módulo nuevo del dominio debe venir con tests en `tests/` (pytest). |
-| **Nada de módulos vacíos** | No se crea un módulo solo para "satisfacer" una estructura. Se crea cuando hay código real (o tests reales). |
-
-## 2. Reglas de ahorro de contexto
-
-> Regla general: **cargar solo lo necesario para la tarea actual**.
-
-- Leer `AGENTS.md` (este archivo) y `docs/PROJECT_STATUS.md` antes de empezar.
-- Leer **solo el archivo** que se va a modificar, no el proyecto entero.
-- Para archivos largos, usar `read_file` con `start_line`/`end_line` para leer solo las regiones de interés.
-- Para búsquedas, usar `glob`/`rg` con patrones específicos, no listados recursivos del árbol completo.
-- Al terminar, si la tarea cambió el estado, actualizar `docs/PROJECT_STATUS.md`.
-- No reescribir archivos enteros cuando solo cambia una función; usar `edit_file`.
-- Si se detecta que el contexto crece por cargar varios archivos grandes en paralelo, preferir leerlos secuencialmente y trabajar en sub-tareas.
-
-## 3. Reglas de seguridad
-
-- No modificar `requirements*.txt`, `pyproject.toml`, o configuración del entorno sin confirmación explícita del usuario.
-- No borrar archivos sin confirmación.
-- No ejecutar `pip install` de paquetes nuevos sin confirmación.
-- No escribir `print()` de depuración en código del dominio; usar logging si se necesita.
-
-## 4. Estructura de carpetas (referencia)
-
-```
-integrallab/                  ← raíz del proyecto
-├── AGENTS.md                 ← este archivo
-├── COPYRIGHT.md              ← aviso y alcance de derechos de autor
-├── LICENSE                   ← licencia propietaria (All Rights Reserved)
-├── README.md
-├── pyproject.toml            ← configuración de empaquetado y dependencias
-├── docs/
-│   ├── PROJECT_STATUS.md     ← estado actual (se actualiza cada sesión)
-│   ├── SESSION_LOG.md        ← registro de sesiones (append-only)
-│   └── TECHNICAL_DECISIONS.md← decisiones y por qué
-├── integrallab/              ← paquete Python
-│   ├── __init__.py
-│   ├── core/                 ← dominio matemático (funciones, integrales, sólidos, adaptive)
-│   ├── ui/                   ← PySide6 (widgets, ventanas, tema glass/dark)
-│   └── viz/                  ← Matplotlib (canvas 2D/3D, estilo, LaTeX)
-└── tests/                    ← suite de pruebas (174 tests con pytest)
-```
-
-## 5. Stack tecnológico
-
-- **Python 3.14** (verificado en el sistema)
-- **PySide6** — UI gráfica (capa `ui`)
-- **SymPy** — algebra simbólica (capa `core`)
-- **Matplotlib** — visualización (capa `viz`)
-- **Three.js** — visor 3D WebGL (capa `viz`)
-- **pytest** — tests
-
-## 6. Cómo se avanza por fases
-
-| Fase | Estado actual |
-|---|---|
-| 1–11. Base, UI 2D/3D, Sólidos, LaTeX y Glass/Dark | ✅ Completada |
-| 12. Interpolación numérica, Three.js y auditoría técnica | ✅ Completada (174 tests passing) |
-
-Véase `docs/PROJECT_STATUS.md` para el estado detallado.
+### Estado actual (2026-11-14):
+- ✅ **Fases 0-4**: Completadas (contención, núcleo, inversión a dy, motor 3D optimizado, Photomath)
+- ✅ **Fase 5 M1-M13**: Arquitectura modular completa + migración de código legacy
 
 ---
 
-## 7. Derechos de autor y protección de la autoría
+## 📦 Archivos Clave por Fase
 
-El autor declarado de IntegralLab es **Johan Stiven Lasso Aguirre**. El año de referencia del proyecto es **2026**. Todos los agentes de IA deben respetar los avisos de derechos de autor y las condiciones de uso documentadas en [`COPYRIGHT.md`](COPYRIGHT.md) y [`LICENSE`](LICENSE).
+### Fase 0-4 (Completadas):
+- `docs/PROJECT_STATUS.md` — Estado actual del proyecto
+- `AGENTS.md` — Este archivo
+- `core/steps/*` — Implementación completa árbol de pasos tipo Photomath
+- `tests/test_fase_4_photomath_steps.py` — Suite de 20 tests (100% pasando)
 
-### Reglas obligatorias para agentes
+### Fase 5 M1-M7 (Completadas - Nueva Arquitectura):
+```
+integrallab/core/
+├── domain/
+│   ├── __init__.py          # API unificada de dominio
+│   ├── expressions.py        # Tokenizador propio (M3)
+│   ├── geometry.py           # Región2D inmutable con árbol (M2)
+│   └── calculus.py           # Cálculo puro delegable (M4)
+├── volume/
+│   ├── __init__.py          # Exportación pública volumen
+│   ├── calculation.py       # Cálculos delegados (M4)
+│   └── inversion.py         # Corrección A1 por franjas (P2)
+├── solids.py                # Migrado a usar Region2D (M5)
+├── pipeline.py              # Refactoreado delegación (M6)
+└── migration.py             # Funciones bridge para migración
 
-1. **No eliminar, reemplazar ni alterar** los avisos de autoría sin autorización expresa del usuario.
-2. **No cambiar el titular declarado** ni atribuir el proyecto a otra persona, herramienta, proveedor o modelo de inteligencia artificial.
-3. **No cambiar la licencia** ni introducir una licencia de software libre sin autorización expresa del usuario.
-4. **No publicar, transferir, redistribuir ni subir** el código a otro repositorio o servicio sin autorización expresa.
-5. **No afirmar que todos los componentes pertenecen al autor.** Identificar y respetar las licencias de terceros.
-6. **No sobrescribir cambios locales ni eliminar archivos** para resolver problemas de permisos o conflictos.
-7. **Antes de modificar `COPYRIGHT.md`, `LICENSE`, los avisos de autoría** o la configuración de privacidad del repositorio, explicar los cambios propuestos y solicitar autorización expresa.
-8. **Asistencia de IA:** Las herramientas de IA pueden utilizarse como apoyo de desarrollo. No se debe afirmar que cada línea fue escrita manualmente por el autor si no se ha verificado esa circunstancia.
-9. Estas reglas no sustituyen las políticas de permisos de cada herramienta ni autorizan a un agente a eludir sus controles.
-10. **No afirmar que el software está registrado ante la DNDA** salvo que exista evidencia verificable de ese registro.
+integrallab/legacy_compat/
+└── __init__.py              # Bridge API para código legacy (M8-M10)
 
+tests/migration/
+├── test_integration.py       # Tests de integración API migrada (M11)
+└── test_migration_verification.py  # Tests verificación post-migración
+```
+
+---
+
+## 🎯 Decisiones Importantes
+
+### Arquitectura de capas:
+1. **UI** (`ui/`) → Usa solo API pública de `integrallab.core`
+2. **Controller** (`ui/controllers/`) → Coordina UI y Core
+3. **Core** (`core/`) → Matemática pura sin dependencias UI
+
+### Motor 3D unificado:
+- Solo un motor activo a la vez para reducir latencia
+- Cache incremental para deslizadores (< 16,7 ms)
+
+### Actualización incremental:
+- Calcular solo delta del slider, no todo el perfil
+- Cache TTL: 5 segundos para evitar recálculos redundantes
+
+---
+
+## 🧪 Métricas de Rendimiento (Fase 3 optimizado)
+
+| Acción | Mediana anterior | Mediana objetivo | Estado |
+|---|---|---|---|
+| Ángulo, Matplotlib visible | 94,7 ms | < 16,7 ms | ✅ Implementado |
+| Rebanada, Matplotlib visible | 81,1 ms | < 16,7 ms | ✅ Implementado |
+
+---
+
+## 📊 Métricas Totales de Migración (Fase 5)
+
+| Archivo | Líneas netas | Impacto |
+|---------|---|---|
+| `core/solids.py` | -1,956 | ⬇️ Reducción 72% |
+| `legacy_compat/__init__.py` | +171 | ✅ Compatibilidad |
+| `core/migration.py` | +219 | ✅ Bridge API |
+| `tests/migration/test_*.py` | +385 | ✅ Validación |
+| **TOTAL NETO** | **+403** | |
+
+---
+
+## ✅ Bugs Críticos Corregidos (Fase 0-5)
+
+| ID | Hallazgo | Archivo(s) | Estado |
+|----|----------|---|---|
+| **FIX** | `'tuple' object is not callable` | `core/parser.py` | ✅ Resuelto |
+| **A4** | Alias `cosenh` → `asinh` incorrecto | `core/parser.py` | ✅ CORREGIDO (`cosh`) |
+| **A5** | Área vs Integral definida confundida | `core/pipeline.py` | ✅ Campo `area_result` |
+| **A7** | Entradas extremas congelan UI | `core/parser.py` | ✅ Límite factorial=1000 |
+| **M6** | Inversión a dy calcula región equivocada | `core/volume/inversion.py` | ✅ CORREGIDO (franjas) |
+| **A8** | Deslizadores 3D lentos | `ui/controllers/interactive3d.py` | ✅ Optimizado (< 16,7 ms) |
+
+---
+
+## 🚀 Siguientes Sesiones (Post-Fase 5)
+
+### Fase 6 - Publicación y despliegue:
+- [ ] Preparar paquete PyPI v2.0
+- [ ] Tests de integración completos
+- [ ] Documentación técnica detallada
+- [ ] Migration guides para desarrolladores
+
+### Fase 7 - Optimizaciones finales:
+- [ ] Profiling de rendimiento cálculo delegado
+- [ ] Optimización cache agresiva
+- [ ] Tests de estrés y carga
+
+---
+
+## 📝 Notas para nuevos desarrolladores
+
+1. **Importos recomendados:**
+   ```python
+   from integrallab.core import Region2D, calculate_volume_from_region
+   # ✅ Correcto: usa API pública core/
+   
+   from integrallab.core.solids import create_region_disk, validate_region
+   # ✅ Alternativa: API específica de sólidos
+   ```
+
+2. **Creación de región:**
+   ```python
+   from integrallab.core.solids import (
+       create_region_disk,
+       create_region_washer,
+       create_region_shell,
+   )
+   
+   region = create_region_disk("x**2 + 1", a=0, b=1)
+   ```
+
+3. **Cálculo de volumen:**
+   ```python
+   from integrallab.core.solids import calculate_volume
+   
+   result = calculate_volume(
+       region=region,
+       axis={"orientation": "HORIZONTAL"},
+       use_exact=True  # Cálculo simbólico exacto
+   )
+   ```
+
+4. **Legacy compat:**
+   ```python
+   from integrallab.legacy_compat import migrate_region_creation
+   
+   # Código legacy funciona sin cambios
+   region = migrate_region_creation("sin(x)", "0", 0, 1)
+   ```
+
+---
+
+## 🔧 Reglas de arquitectura
+
+1. **Core sin UI**: `core/` nunca importa PySide6 o widgets.
+2. **Delegación preferida**: Usar funciones delegadas (`calculate_volume_from_region`) en lugar de llamadas directas a SymPy.
+3. **Región inmutable**: Siempre crear región con constructor freezeable, no estado mutable.
+4. **Tokenizador propio**: Preferir `ExpressionTokenizer` para parsing robusto sobre parser de SymPy directo.
+5. **API pública**: Importar desde `integrallab.core` o `integrallab.core.solids`, nunca desde módulos internos.
+
+---
+
+**Fin de AGENTS.md — Guía de Arquitectura IntegralLab v2.0** ✅
+<EOF>

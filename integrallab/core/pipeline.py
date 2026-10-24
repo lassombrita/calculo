@@ -22,22 +22,25 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from integrallab.core.operations import NumericResult, integrate_definite, subtract_expressions
+from integrallab.core.domain.calculus import integrate, IntegrationResult
 from integrallab.core.parser import ParsedExpression
+from integrallab.core.domain.geometry import Region2D
+from integrallab.core.volume.calculation import (
+    VolumeResult,
+    calculate_disk_volume,
+    calculate_washer_volume,
+    calculate_shell_volume,
+    calculate_volume_from_region,
+)
 from integrallab.core.solids import (
     AxisOrientation,
     MethodRecommendation,
-    Region2D,
     RevolutionAxis,
     SolidMesh3D,
     SolidMethod,
-    VolumeResult,
-    axis_crossing_error,
-    calculate_revolution_volume,
+    calculate_volume,
     domain_error,
-    generate_solid_mesh,
     recommend_method,
-    numeric_volume,
 )
 
 # Resolución de la malla que se envía al visor. El giro es exacto, así que 64 × 48 ya da un
@@ -277,7 +280,7 @@ def run_calculation(
                 
                 area_result = (None, res_2d)  # Area como resultado principal en modo numérico
                 
-                vol_val = numeric_volume(region, request.axis)
+                vol_val = calculate_volume_from_region(region=region, axis=request.axis)
                 method = request.method or (
                     SolidMethod.SHELLS if request.axis.orientation == AxisOrientation.VERTICAL else SolidMethod.WASHERS
                 )
@@ -299,7 +302,7 @@ def run_calculation(
         checkpoint()
         rec = recommend_method(region, request.axis)
         checkpoint()
-        vol_res = calculate_revolution_volume(region, request.axis, method=request.method)
+        vol_res = calculate_disk_volume(region, request.axis, method=request.method)
         
         # BUG FIX A5: Corregir volumen negativo por planteamiento incorrecto
         if vol_res.is_success and vol_res.numeric_value is not None and vol_res.numeric_value < 0:
