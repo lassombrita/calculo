@@ -1948,8 +1948,8 @@ def _reject_negative(res: VolumeResult) -> VolumeResult:
 
 
 def numeric_volume(region: Region2D, axis: RevolutionAxis) -> float | None:
-    """V por cuadratura (mpmath), partiendo en los cruces. V?lido porque el eje no atraviesa
-    la regi?n (axis_crossing_error ya lo garantiza)."""
+    """V por cuadratura (mpmath), partiendo en los cruces. Válido porque el eje no atraviesa
+    la región (axis_crossing_error ya lo garantiza)."""
     import mpmath
 
     f = _ensure_parsed(region.f_expr).sympy_expr
@@ -1967,6 +1967,23 @@ def numeric_volume(region: Region2D, axis: RevolutionAxis) -> float | None:
     nodes = sorted({a, b, *cuts, *np.linspace(a, b, 17).tolist()})
     val = mpmath.quad(sympy.lambdify(var, core, "mpmath"), nodes)
     return float(val) if mpmath.isfinite(val) else None
+
+
+def _cross_check(res: VolumeResult, region: Region2D, axis: RevolutionAxis) -> VolumeResult:
+    """Rechaza un volumen simbólico proveniente de inversión que no coincide con la cuadratura independiente."""
+    if not res.is_success or res.numeric_value is None:
+        return res
+    ref = numeric_volume(region, axis)
+    if ref is None or math.isclose(res.numeric_value, ref, rel_tol=1e-5, abs_tol=1e-7):
+        return res
+    return VolumeResult(
+        method=res.method,
+        is_success=False,
+        error_message=(
+            f"El planteamiento invertido da {res.numeric_value:.6g}, pero la cuadratura da "
+            f"{ref:.6g}. Use el método directo para este eje."
+        ),
+    )
 
 
 def calculate_revolution_volume(
@@ -2043,7 +2060,7 @@ def calculate_revolution_volume(
                                 expression_latex=s.expression_latex,
                             )
                         )
-                    return _reject_negative(VolumeResult(
+                    return _cross_check(_reject_negative(VolumeResult(
                         method=method,
                         exact_plain_text=res.exact_plain_text,
                         exact_latex=res.exact_latex,
@@ -2054,7 +2071,7 @@ def calculate_revolution_volume(
                         is_success=True,
                         steps=new_steps,
                         warnings=res.warnings,
-                    ))
+                    )), region, axis)
                 return res
             except InversionError as err:
                 return VolumeResult(

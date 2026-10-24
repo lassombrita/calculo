@@ -139,6 +139,7 @@ def _build_safe_dicts() -> tuple[dict[str, Any], dict[str, Any]]:
         "Min": sympy.Min,
         "max": sympy.Max,
         "min": sympy.Min,
+        "factorial": sympy.factorial,
     }
 
     safe_global = {
@@ -261,7 +262,8 @@ def _estimate_constant(node: ast.AST) -> float | None:
     return None
 
 
-MAX_LITERAL_EXPONENT = 300  # notación científica: 1e300 sí, 1e99999999 no
+MAX_LITERAL_EXPONENT = 300
+MAX_FACTORIAL_ARG = 1000  # notación científica: 1e300 sí, 1e99999999 no
 
 
 def _validate_numeric_sizes(tree: ast.AST) -> None:
@@ -280,6 +282,19 @@ def _validate_numeric_sizes(tree: ast.AST) -> None:
                 )
         if isinstance(node, ast.Constant) and isinstance(node.value, float) and math.isinf(node.value):
             raise ExpressionParseError("Número fuera de rango (infinito).")
+        # Acotar argumentos de factorial para evitar congelar el hilo de UI
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "factorial"
+            and node.args
+        ):
+            val = _estimate_constant(node.args[0])
+            if val is not None and val > MAX_FACTORIAL_ARG:
+                raise ExpressionParseError(
+                    f"El factorial admite argumentos de hasta {MAX_FACTORIAL_ARG}."
+                )
+
         if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow)):
             continue
         exponent = _estimate_constant(node.right)
@@ -500,7 +515,7 @@ def _normalize_expression(text: str) -> str:
         ('ctg',     'cot'),
         ('cosec',   'csc'),
         ('senh',    'sinh'),
-        ('cosenh',  'asinh'),
+        ('cosenh',  'cosh'),
         ('tgh',     'tanh'),
         ('ctgh',    'coth'),
         ('sen',     'sin'),
@@ -646,7 +661,7 @@ def parse_numeric_or_symbolic(val: object) -> sympy.Expr:
     return parsed.sympy_expr
 
 
-_PT_NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+_PT_NUM = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 _PT_PAREN = rf"\(\s*{_PT_NUM}\s*,\s*{_PT_NUM}\s*\)"
 _PT_BRACKET = rf"\[\s*{_PT_NUM}\s*,\s*{_PT_NUM}\s*\]"
 _PT_PLAIN = rf"{_PT_NUM}(?:\s*,\s*|\s+){_PT_NUM}"

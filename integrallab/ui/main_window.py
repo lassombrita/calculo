@@ -56,6 +56,7 @@ from integrallab.core.interpolation import (
     interpolate_lagrange,
 )
 from integrallab.core.parser import (
+    MAX_EXPRESSION_LENGTH,
     ExpressionParseError,
     ParsedExpression,
     is_points_input,
@@ -305,6 +306,7 @@ class MainWindow(QMainWindow):
         f_label.setFixedWidth(45)
         f_row.addWidget(f_label)
         self.expression_input = QLineEdit()
+        self.expression_input.setMaxLength(20_000)
         self.expression_input.setPlaceholderText("ej. sin(x), x**2, sqrt(x)...")
         self.expression_input.returnPressed.connect(self._on_plot_clicked)
         f_row.addWidget(self.expression_input)
@@ -316,6 +318,7 @@ class MainWindow(QMainWindow):
         g_label.setFixedWidth(45)
         g_row.addWidget(g_label)
         self.g_expression_input = QLineEdit()
+        self.g_expression_input.setMaxLength(MAX_EXPRESSION_LENGTH)
         self.g_expression_input.setPlaceholderText("Opcional: segunda curva, ej. x**2")
         self.g_expression_input.returnPressed.connect(self._on_plot_clicked)
         g_row.addWidget(self.g_expression_input)
@@ -327,6 +330,7 @@ class MainWindow(QMainWindow):
         label_a = QLabel("Límite a =")
         limits_row.addWidget(label_a)
         self.limit_a_input = QLineEdit()
+        self.limit_a_input.setMaxLength(MAX_EXPRESSION_LENGTH)
         self.limit_a_input.setPlaceholderText("ej. 0")
         self.limit_a_input.setFixedWidth(65)
         self.limit_a_input.returnPressed.connect(self._on_plot_clicked)
@@ -335,6 +339,7 @@ class MainWindow(QMainWindow):
         label_b = QLabel("Límite b =")
         limits_row.addWidget(label_b)
         self.limit_b_input = QLineEdit()
+        self.limit_b_input.setMaxLength(MAX_EXPRESSION_LENGTH)
         self.limit_b_input.setPlaceholderText("ej. 2")
         self.limit_b_input.setFixedWidth(65)
         self.limit_b_input.returnPressed.connect(self._on_plot_clicked)
@@ -368,6 +373,7 @@ class MainWindow(QMainWindow):
         self.axis_pos_label = QLabel("Posición k / h:")
         axis_pos_row.addWidget(self.axis_pos_label)
         self.axis_value_input = QLineEdit("0")
+        self.axis_value_input.setMaxLength(MAX_EXPRESSION_LENGTH)
         self.axis_value_input.setPlaceholderText("ej. 2 o -1")
         self.axis_value_input.setEnabled(False)
         self.axis_value_input.returnPressed.connect(self._on_plot_clicked)

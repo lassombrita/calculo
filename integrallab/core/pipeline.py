@@ -180,7 +180,7 @@ def run_calculation(
             None, request.axis, request.method,
         )
 
-    # Dominio: f y g deben ser reales en [a, b] (sqrt(x) en [-1, 1] daba ?rea compleja y V = 0).
+    # Dominio: f y g deben ser reales en [a, b] (sqrt(x) en [-1, 1] daba área compleja y V = 0).
     domain_msg = domain_error(region)
     if domain_msg:
         return CalculationOutput(
@@ -193,7 +193,7 @@ def run_calculation(
     if axis_msg:
         vol = _not_computed(
             request.method,
-            f"{axis_msg} Elija un eje que no atraviese la regi?n (por ejemplo, uno que pase por "
+            f"{axis_msg} Elija un eje que no atraviese la región (por ejemplo, uno que pase por "
             "su borde o fuera de ella).",
         )
         return CalculationOutput(
@@ -235,7 +235,7 @@ def run_calculation(
             exact_plain_text=f"{vol_val:.5f}" if vol_val is not None else "",
             exact_latex=f"{vol_val:.5f}" if vol_val is not None else "",
             steps=[],
-            warnings=["C?lculo num?rico (sin forma exacta)."],
+            warnings=["Cálculo numérico (sin forma exacta)."],
         )
         return CalculationOutput(res_2d, region, None, vol_res, mesh, request.axis, request.method)
 
@@ -243,7 +243,7 @@ def run_calculation(
     res_2d = integrate_definite(integrand, request.a_text, request.b_text)
     if not res_2d.is_success:
         return CalculationOutput(
-            res_2d, region, None, _not_computed(request.method, "No se calcul? el volumen."),
+            res_2d, region, None, _not_computed(request.method, "No se calculó el volumen."),
             None, request.axis, request.method,
         )
 
