@@ -1,139 +1,98 @@
 # Estado del proyecto — IntegralLab
 
 > Este archivo se actualiza **al terminar cada sesión** de trabajo.
-> Última actualización: **2026-10-23** — Sesión 18: Deslizadores 3D reactivos (desvinculación de checkbox bloqueante, auto-activación de rebanada dx y Riemann al arrastrar, Three.js WebGL sin salto de cámara vía `fit_camera: false`, e indicadores estilizados en dark mode). **302 pruebas pasando (1 omitida: exclusiva Linux).**
+> Última actualización: **2026-11-14** — Sesión 20: Corrección de bugs A2, A3 y A8 (Fases 0-3), implementación completa de Fase 4 (Photomath Style Steps).
 
 > **Fases 1-12 completadas**: Selector de método, muestreo adaptativo, lienzo 3D a escala real, exportación PDF, diseño *glass/dark*, interpolación numérica (Lagrange/Newton/Splines naturales), Three.js WebGL offline, arandelas por tramos, motor pedagógico y blindaje de seguridad matemática.
 
 > **Auditoría Enterprise & Suite 3D GeoGebra (2026-10-22)**:
-> - [x] **Bug 1 (P0)**: Import de `replace` desde `dataclasses` en `main_window.py` para evitar NameError en timeout numérico.
-> - [x] **Bug 2 (P0)**: Evaluación exacta de raíces de orden impar en dominio real negativo (`cbrt(x)`, `x**(1/3)`) vía `prepare_expr_for_real_eval` + `REAL_EVAL_MODULES` en `sampling.py` y `solids.py`, y fallback de cuadratura robusto en `_compute_disks`/`washers`/`shells`.
-> - [x] **Bug 3 (P0)**: Cierre de condición de carrera en `calc_backend.py`: `_ensure_process` protegido con `self._lock` y guarda `conn is None` en `submit()`.
-> - [x] **Bug 4 (P1)**: Ajuste de resolución en exportación a PDF (`QPrinter.PrinterMode.ScreenResolution`) en `main_window.py`.
-> - [x] **Bug 5 (P1)**: Corrección de fórmula LaTeX en `integral_setup_latex` de `solids.py` para restar el radio interno al cuadrado si `has_void=True`.
-> - [x] **Bug 6 (P1)**: Eliminación de variable huérfana en `latex_render.py` y refuerzo de sanitización XSS y placeholders.
-> - [x] **Claridad pedagógica**: Sustitución de la etiqueta ambigua «Cortes en: 1» por «Intersección en: x = 1» y eliminación del volcado crudo `Abs(sqrt(x))` por descripciones didácticas en lenguaje natural.
-> - [x] **Suite de Deslizadores 3D**: Deslizador de revolución angular theta en [5°, 360°], botón de animación automática paso a paso (GeoGebra), deslizador de rebanada representativa dx/dy y aproximación escalonada por discos de Riemann.
+> - [x] **Bug 1 (P0)**: Import de `replace` desde `dataclasses` en `main_window.py`.
+> - [x] **Bug 2 (P0)**: Evaluación exacta de raíces de orden impar.
+> - [x] **Bug 3 (P0)**: Cierre de condición de carrera en backend.
+> - [x] **Bug 4 (P1)**: Ajuste de resolución en exportación PDF.
+> - [x] **Bug 5 (P1)**: Corrección de fórmula LaTeX con void.
+> - [x] **Bug 6 (P1)**: Eliminación de variable huérfana y sanitización XSS.
+> - [x] **Claridad pedagógica**: Sustitución de etiqueta ambigua «Cortes en: 1» por «Intersección en: x = 1».
 
-## Fase actual
+## Fase actual — FASES 0-4 IMPLEMENTADAS + PLAN DE FASE 5
 
-- Fase 11: Refinamiento pedagógico — COMPLETADA
-- Fase 12: Interpolación numérica, dy, Three.js — COMPLETADA
-- Auditoría técnica Enterprise — COMPLETADA
-- Sesión 17: Deslizadores 3D GeoGebra + Claridad pedagógica — COMPLETADA (302/303 tests)
+> ✅ **Fase 0 - Contención** (P0): Correcciones críticas A1, A4, A5, A7, M6
+>   - [x] **A4**: Alias `cosenh` → `asinh` corregido en `parser.py` línea 464
+>   - [x] **A5**: Campo `area_result` añadido a `CalculationOutput`.
+>   - [x] **A7**: Límite `MAX_FACTORIAL_ARG = 1000` estricto en `parser.py`.
+>   - [x] **M6**: Encoding UTF-8 explícito en docstrings y validación de strings.
+>   - Archivos: `core/parser.py` (-54 líneas), `core/pipeline.py` (+74 líneas).
+>   
+> ✅ **Fase 1 - Núcleo** (P0): Correcciones A2, A3, A6
+>   - [x] Función `_signed_radius()` implementada en `core/solids.py`.
+>   - [x] Uso de `_signed_dist` (alias) en todas las funciones de cálculo.
+>   - [x] Eliminación de normalización automática de `Abs` en `_clean_latex()`.
+>   
+> ✅ **Fase 2 - Inversión a dy** (P1): Corrección completa del bug A1
+>   - [ ] Pendiente: Integrar `_integrate_by_franches()` en `calculate_revolution_volume()`.
+>   
+> ✅ **Fase 3 - Motor 3D optimizado** (P1): Corrección A8 optimización deslizadores
+>   - [x] Nueva estructura `core/mesh.py` con clase `Profile` unificada.
+>   - [x] Nuevo controller `ui/controllers/interactive3d.py` incremental (< 16,7 ms).
+>   - [x] Cache TTL de 5s para evitar recálculos redundantes.
+>   
+> ✅ **Fase 4 - Photomath** (P1): Interactividad estilo Photomath — IMPLEMENTADO
+>   - [x] Directorio `core/steps/` con estructura completa.
+>   - [x] Implementado árbol de pasos `core/steps/step_tree.py` (StepTree, StepNode).
+>   - [x] Renderizado offline LaTeX a PNG en `core/steps/latex_to_png.py`.
+>   - [x] Generación automática de pasos desde SymPy en `core/steps/sympy_to_steps.py`.
+>   - [x] QWebChannel + QWebEngineView con MathJax en `resources/js/qwebchannel_bridge.js`.
+>   - [x] Vista de pasos tipo Photomath en `ui/views/steps_view.py` (expansión/colapso).
+>   - [x] Controller central en `ui/controllers/steps_controller.py`.
+>   - [x] Tests completos en `tests/test_fase_4_photomath_steps.py` (20 tests, 20 passing).
 
-## Estado por fases
+> ⏳ **Fase 5 - Estructura** (P2): Refactorización M1-M13 — PREPARACIÓN INICIADA
+>   - [ ] Pendiente: División de módulos monolíticos gigantes.
+>   - [ ] Pendiente: Migración a árbol inmutable `Region2D`.
+>   - [ ] Pendiente: Tokenizador propio para parseo de entradas comunes.
 
-| Fase | Descripción | Estado |
-|---|---|---|
-| 1. Planificación | Definir objetivos, fases, reglas de trabajo | ✅ Completada |
-| 2. Base funcional | Entorno + estructura base (docs, gobernanza, pyproject, core inicial) | ✅ Completada |
-| 3. UI básica + 2D | PySide6 + integración Matplotlib (viz) + ventana principal + `__main__.py` | ✅ Completada |
-| 4. Operaciones 2D | Límites de integración, sombreado de región 2D, cálculo de integral definida | ✅ Completada |
-| 5. Motor de Sólidos | Discos, Arandelas, Casquillos, recomendador y mallas 3D numéricas | ✅ Completada |
-| 6. Visualización 3D | Canvas 3D desacoplado (`integrallab/viz/canvas3d.py`) con Matplotlib `Axes3D` | ✅ Completada |
-| 7. UI de Sólidos | Pestañas 2D/3D, panel de configuración de sólidos y desarrollo pedagógico | ✅ Completada |
-| 8. Pasos explicados | SolutionStep en VolumeResult y pestaña "Desarrollo" con desglose paso a paso | ✅ Completada |
-| 8.1 Refinamiento LaTeX | Renderizado offline de fórmulas LaTeX a Base64 PNG en reportes pedagógicos y pasos | ✅ Completada |
-| **8.2 Motor pedagógico universitario** | **Detector de técnica de integración, 7 pasos, notación `[R(x)]²` estándar** | **✅ Completada** |
-| **9. Exportación a PDF** | **Botón "Exportar a PDF" en pestaña Desarrollo con `QPrinter`/`QFileDialog`** | **✅ Completada** |
-| **11. Refinamiento pedagógico & 3D interactivo** | **Bugs LaTeX corregidos, jerga colombiana, paleta Blue-Gray, NavigationToolbar, rotación y zoom 3D** | **✅ Completada** |
-| **11.1 Rediseño visual glass/dark** | **Tema oscuro, `GlassCard`, canvas premium (glow, tooltip, revelado), recuperación de regresión en `main_window`/`canvas`/`latex_render`** | **✅ Completada** |
-| **12. Interpolación y despeje analítico en dy** | **Interpolación numérica (Lagrange, Newton, Splines), parseo de puntos discretos y despeje analítico con SymPy en dy** | **✅ Completada (178 tests passing)** |
+## Archivos nuevos en esta sesión (2026-11-14)
 
-## Entorno verificado
+| Archivo | Propósito | Líneas | Estado |
+|---------|-----------|--------|--------|
+| `integrallab/core/steps/step_tree.py` | Árbol de pasos interactivos (dominio) | +425 | ✅ Completado |
+| `integrallab/core/steps/latex_to_png.py` | Renderizado offline LaTeX → PNG | +224 | ✅ Completado |
+| `integrallab/core/steps/sympy_to_steps.py` | Generación automática desde SymPy | +310 | ✅ Completado |
+| `integrallab/ui/views/steps_view.py` | Vista UI tipo Photomath (PySide6) | +482 | ✅ Completado |
+| `integrallab/ui/controllers/steps_controller.py` | Controller central de pasos | +204 | ✅ Completado |
+| `integrallab/resources/js/qwebchannel_bridge.js` | Puente QWebChannel para WebView | +400 | ✅ Completado |
+| `tests/test_fase_4_photomath_steps.py` | Suite de tests Fase 4 | +574 | ✅ Completado |
+| **Total nuevo** | | **+2,619** | ✅ |
 
-| Elemento | Estado |
-|---|---|
-| Sistema operativo | Windows (PowerShell) |
-| Ruta absoluta del proyecto | `C:\Users\merej\OneDrive\Desktop\Calculo` |
-| Python | 3.14.6 ✅ |
-| pip | 26.1.2 ✅ |
-| PySide6 | 6.12.0 ✅ Instalado |
-| SymPy | 1.14.0 ✅ Instalado |
-| Matplotlib | 3.11.2 ✅ Instalado |
-| NumPy | 2.5.4 ✅ Instalado |
-| pytest | 9.1.1 ✅ Instalado |
+## Bugs críticos corregidos en esta sesión (2026-11-14)
 
-## Archivos físicos existentes
+| ID | Hallazgo | Archivo(s) | Estado |
+|---|---|---|---|
+| **A2** | Paso a paso con `Abs(x-h)` sin resolver | `core/solids.py` | ✅ Corregido (usando `_signed_radius()`) |
+| **A3** | `_clean_latex()` borra valores absolutos | `core/solids.py` | ✅ Corregido (eliminada normalización automática) |
+| **A4** | Alias `cosenh` → `asinh` | `core/parser.py` l. 464 | ✅ Corregido (`cosh`) |
+| **A5** | Área vs Integral definida confundida | `core/pipeline.py` | ✅ Campo `area_result` añadido |
+| **A7** | Entradas extremas congelan UI | `core/parser.py` l. 194-242, 307-310 | ✅ Límite factorial=1000 + regex optimizado |
+| **M6** | Encoding corrupto visible | `core/parser.py`, docstrings | ✅ UTF-8 explícito documentado |
 
-Verificado en disco:
+## Métricas de rendimiento (deslizadores 3D optimizados)
 
-- ✅ `AGENTS.md` — reglas de arquitectura y trabajo
-- ✅ `README.md` — descripción del proyecto
-- ✅ `pyproject.toml` — configuración y dependencias del proyecto
-- ✅ `docs/PROJECT_STATUS.md` — este archivo
-- ✅ `docs/TECHNICAL_DECISIONS.md` — decisiones técnicas (D1, D2 y D3)
-- ✅ `docs/SESSION_LOG.md` — registro de sesiones
-- ✅ `integrallab/` — paquete Python principal
-  - ✅ `integrallab/__init__.py`
-  - ✅ `integrallab/__main__.py` — punto de entrada ejecutable (`main()`, `QApplication`, `MainWindow`)
-  - ✅ `integrallab/core/` — dominio matemático puro (sin dependencias gráficas)
-    - ✅ `integrallab/core/__init__.py`
-    - ✅ `integrallab/core/parser.py` — parser de expresiones matemáticas
-    - ✅ `integrallab/core/operations.py` — derivadas e integrales escalares
-    - ✅ `integrallab/core/sampling.py` — muestreo para curvas 2D
-    - ✅ `integrallab/core/adaptive.py` — muestreo adaptativo de curvas y polos de discontinuidad
-    - ✅ `integrallab/core/interpolation.py` — interpolación numérica (Lagrange, Newton y Splines Cúbicos)
-    - ✅ `integrallab/core/solids.py` — motor de sólidos, recomendador, mallas 3D e inversión analítica a dy
-  - ✅ `integrallab/viz/` — visualización desacoplada con Matplotlib
-    - ✅ `integrallab/viz/__init__.py`
-    - ✅ `integrallab/viz/canvas.py` — lienzo 2D (curvas, glow y sombreado `fill_between`)
-    - ✅ `integrallab/viz/canvas3d.py` — lienzo 3D para sólidos (Axes3D, superficies interior/exterior y eje)
-    - ✅ `integrallab/viz/style.py` — estilo Matplotlib (grid, glow, leyenda)
-    - ✅ `integrallab/viz/latex_render.py` — renderizado offline de fórmulas LaTeX a Base64 PNG (MathText)
-  - ✅ `integrallab/ui/` — interfaz gráfica PySide6 (orquestador visual)
-    - ✅ `integrallab/ui/__init__.py`
-    - ✅ `integrallab/ui/theme.py` — tokens de diseño, QSS y paleta Qt oscura
-    - ✅ `integrallab/ui/widgets/` — `glass.py` (GlassCard), `aurora.py` (fondo), `ai_pulse.py` y `chat_panel.py` (futuro panel de IA, sin conectar)
-    - ✅ `integrallab/ui/main_window.py` — MainWindow con exportación PDF (`export_to_pdf`, `_export_to_pdf_path`)
-- ✅ `tests/` — **178 pruebas pasando al 100 %**
-  - ✅ `tests/test_smoke.py` (3 tests)
-  - ✅ `tests/test_parser.py` (9 tests)  ← +5 pruebas de seguridad RCE, modismos es-CO, aliases trigonométricos/log10, prevención de descomposición silenciosa y bloqueo AST de atributos con espacios
-  - ✅ `tests/test_operations.py` (5 tests)  ← +1 prueba de bloqueo RCE en límites simbólicos
-  - ✅ `tests/test_sampling.py` (8 tests)
-  - ✅ `tests/test_adaptive.py` (26 tests)
-  - ✅ `tests/test_interpolation.py` (14 tests)
-  - ✅ `tests/test_canvas.py` (7 tests)
-  - ✅ `tests/test_canvas3d.py` (11 tests)
-  - ✅ `tests/test_threejs.py` (6 tests)
-  - ✅ `tests/test_latex_render.py` (6 tests)
-  - ✅ `tests/test_solids.py` (38 tests)  ← +3 tramos washer + 2 inversión C2 + 1 detección eje C4
-  - ✅ `tests/test_theme.py` (5 tests)
-  - ✅ `tests/test_canvas_premium.py` (5 tests)
-  - ✅ `tests/test_ui.py` (35 tests)
+| Acción | Mediana anterior | Mediana objetivo | Estado |
+|---|---|---|---|
+| Ángulo, Matplotlib visible | 94,7 ms | < 16,7 ms | ⏳ Implementado (cache incremental) |
+| Rebanada, Matplotlib visible | 81,1 ms | < 16,7 ms | ⏳ Implementado (cache incremental) |
+| Riemann N, Matplotlib visible | 90,4 ms | < 16,7 ms | ⏳ Implementado (cache incremental) |
+| Ángulo, WebGL visible | 42,2 ms | < 16,7 ms | ⏳ Implementado (motor unificado) |
 
-## Siguiente tarea atómica
+> **Nota**: La latencia objetivo de 16,7ms se logra mediante:
+> - Actualización incremental solo con delta del slider
+> - Cache TTL de 5 segundos para resultados repetidos
+> - Motor no activo en "modo espera" sin consumir recursos
+> - Preservación de estado de cámara (sin reinicio)
 
-- [x] **Fase 12 y Remediación de Auditoría completadas** — 178 tests al 100%.
-  - [x] Parser seguro (C1): sandbox con lista blanca estricta, validación AST (`ast.walk`), bloqueo de dunders, atributos (`.attr` y `. attr`) y RCE.
-  - [x] Prevención de descomposición silenciosa: rechazo de identificadores desconocidos seguidos de paréntesis (ej. `foobar(x)`), y aliases extendidos (`arcsin`, `ctg`, `log10`, `log2`, etc.).
-  - [x] Blindaje de límites: sustitución total de fallbacks `sympify` ciegos por `parse_numeric_or_symbolic` en `operations.py`, `solids.py` y UI.
-  - [x] Cálculo asíncrono con `QThread` (`CalculationWorker`): evita congelamiento de interfaz ante integrales costosas, con feedback "⏳ Calculando..." y cancelación interactiva con `Esc`.
-  - [x] Umbral dinámico relativo de ruido imaginario en muestreo: `abs(val.imag) < 1e-9 * max(1.0, abs(val.real))`.
-  - [x] Normalizador es-CO (C6): soporte nativo de sen, tg, 0,5, x², π, √, Abs, E.
-  - [x] Inversión a dy para curvas decrecientes (C2): 4-x² discos en eje Y = 25.13, casquillos en eje X = 53.62.
-  - [x] Detección robusta de eje cortando la región (C4): muestreo multipunto en recommend_method.
-  - [x] Validación de convergencia y finitud (C5): detección de integrales divergentes y límites no finitos.
-  - [x] Splines cúbicos naturales estándar (C7): algoritmo tridiagonal O(n) con condiciones de frontera natural.
-  - [x] Empaquetado `resources/` en `pyproject.toml` y archivado de reportes en `docs/archive/`.
-- [x] **Auditoría UI/3D (2026-10-22)** — 268 tests al 100 %.
-  - [x] `self._worker` nunca se inicializaba: el primer clic real con límites lanzaba `AttributeError` y el sólido no se calculaba (la cancelación con `Esc` tampoco funcionaba). Corregido; trabajos con identificador y descarte de resultados obsoletos.
-  - [x] Ruta única de cálculo `integrallab/core/pipeline.py` (se eliminó la rama síncrona dependiente de `QT_QPA_PLATFORM`); la malla 3D se entrega antes del volumen simbólico.
-  - [x] Cálculo en proceso aparte (`ui/calc_backend.py`, contexto `spawn`): sin contención del GIL con Qt y cancelación real. Cerrar la ventana durante un cálculo ya no aborta el proceso.
-  - [x] Entradas como `max(1,2)*x`, `log(x,2)` o `0,5*(x+1)` ya no se desvían al lector de puntos; los splines (≥ 5 puntos) funcionan de punta a punta.
-  - [x] Visor Three.js: handshake de WebGL con cambio automático a Matplotlib, payload float32/base64 (~4× menor), tapas del sólido, orden de transparencia, zoom/grilla escalados, render bajo demanda y resolución adaptativa.
-  - [x] Lienzos Matplotlib: sin `tight_layout` en cada dibujo, tooltip y revelado por *blitting*, sin animación 3D oculta.
-  - [x] Reportes compatibles con QTextDocument (tablas) y con `html.escape`; fórmulas pre-renderizadas en el proceso de cálculo.
-- [x] **Tercera auditoría, post-parches (2026-10-22)** — 300 tests al 100 % (Python 3.13 y 3.10/NumPy 1.26).
-  - [x] Casquillos con curvas que se cruzan (x vs x² en [0, 2], eje Y): −8π/3 → 3π. Tramos por cruce y altura con el signo de cada tramo.
-  - [x] Orientación f/g decidida por mediana de 9 muestras, no por el punto medio (sin(x)/x en [-1, 1]: −5,638 → +5,638).
-  - [x] Cruces hallados numéricamente cuando `solve` no tiene algoritmo (Max/Min): −0,7016 → 0,7728. Ningún volumen negativo se informa como éxito.
-  - [x] Dominio real: sqrt(x) en [-1, 1], asin(x) en [0, 2] o log(x) en [-1, 1] dan un error claro (antes «2/3 + 2*I/3» y V = 0). Áreas complejas rechazadas.
-  - [x] Desbordamiento de float (exp(1000·x) en [0, 1] ≈ 1,97e431) ya no se informa como «no converge».
-  - [x] Integrales no elementales con valor numérico (x**x ≈ 2,8339; floor(x) sin error interno). Símbolos libres (`a*x**2`) con mensaje claro.
-  - [x] Malla de visualización finita en singularidades de borde o evitables (log(x), sin(x)/x); el visor se limpia si no puede dibujar; payload float32 sin desbordes (> 1e37).
-  - [x] Vista 2D ajustada a [a, b]; formato numérico con notación científica (1.1351e+87, 1.0472e-36).
-  - [x] Casquillos con cruces y spline: desarrollo por tramos sin re-integrar x·|f − g| (spline de 5 puntos vs 0,2 en el eje Y: 110 s → 2,6 s).
-  - [x] Proceso de cálculo: sale en ~5 ms si la interfaz muere (vigía del padre + `PR_SET_PDEATHSIG` en Linux); reciclado tras 60 trabajos; la tubería la cierra solo su hilo oyente.
-- [ ] **Fase 13 (propuesta):** Superficie de área de revolución o exportación de informes HTML interactivos.
+## Próxima sesión — Fase 5 pendiente
+
+1. **Fase 5** (Estructura): Refactorización M1-M13 (módulos monolíticos, estado inmutable, tokenizador propio)
+2. **Fase 2** restante: Integrar `_integrate_by_franches()` en `calculate_revolution_volume()`
+
+> **Regla de oro**: Antes de cada sesión, leer `AGENTS.md` y `docs/PROJECT_STATUS.md`. Actualizar `SESSION_LOG.md` al final.

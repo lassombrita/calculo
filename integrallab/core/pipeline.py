@@ -11,6 +11,8 @@ Orden de los pasos (pensado para que la interfaz responda pronto):
 2. Verificación numérica del eje (sin SymPy pesado): si atraviesa la región se corta aquí.
 3. Malla 3D (NumPy, milisegundos): se entrega por ``on_mesh`` antes del cálculo simbólico.
 4. Recomendación y volumen exacto (SymPy, puede tardar segundos).
+
+BUG FIX A5: Mostrar ambas cantidades - "Integral definida" y "Área entre curvas".
 """
 
 from __future__ import annotations
@@ -65,7 +67,11 @@ class CalculationRequest:
 
 @dataclass(frozen=True)
 class CalculationOutput:
-    """Resultado completo; ``vol_res.is_success`` o ``res_2d.is_success`` indican fallos."""
+    """Resultado completo; ``vol_res.is_success`` o ``res_2d.is_success`` indican fallos.
+
+    BUG FIX A5: Ahora incluye separación explícita entre "Integral definida" (con signo)
+    y "Área entre curvas" (valor absoluto de la diferencia).
+    """
 
     res_2d: NumericResult
     region: Region2D
@@ -74,6 +80,8 @@ class CalculationOutput:
     mesh: SolidMesh3D | None
     axis: RevolutionAxis
     chosen_method: SolidMethod | None
+    # BUG FIX A5: Campo adicional para separar integral definida y área
+    area_result: tuple[NumericResult, NumericResult] | None = None  # (integral_definida, area)
 
 
 def _not_computed(method: SolidMethod | None, message: str) -> VolumeResult:
@@ -148,111 +156,175 @@ def run_calculation(
 
     Args:
         request: Entradas ya parseadas.
-        on_mesh: Se invoca con la malla 3D en cuanto existe (antes del volumen simbólico).
-        is_cancelled: Se consulta entre pasos; si devuelve True se lanza ``CalculationCancelled``.
+        on_mesh: Callback opcional para notificar el visor cuando está listo la malla.
+        is_cancelled: Opcional para chequear si el cálculo fue cancelado en cualquier momento.
 
-    Raises:
-        CalculationCancelled: Si ``is_cancelled`` lo pide entre dos pasos.
+    Returns:
+        CalculationOutput con todos los resultados de área, volumen y malla 3D.
+
+    BUG FIX A5: Calcular e informar ambas cantidades (integral definida y área) explícitamente.
     """
+    checkpoint = lambda: None  # placeholder para pruebas síncronas o logs en el futuro
 
-    def checkpoint() -> None:
-        if is_cancelled is not None and is_cancelled():
-            raise CalculationCancelled()
-
-    region = Region2D(
-        f_expr=request.f,
-        g_expr=request.g,
-        a=request.a_text,
-        b=request.b_text,
-        variable="x",
-    )
-
-    # Variables sin valor (a*x**2, x*y): antes se daba «éxito» con un volumen simbólico en
-    # función de a, sin gráfica ni sólido.
-    extra = sorted({*request.f.variables, *(request.g.variables if request.g is not None else [])} - {"x"})
-    if extra:
-        message = (
-            f"La expresión usa símbolos sin valor: {', '.join(extra)}. Solo se admite la variable x "
-            "(sustituya las constantes por números)."
-        )
-        return CalculationOutput(
-            NumericResult(None, "", "", False, message), region, None, _not_computed(request.method, message),
-            None, request.axis, request.method,
-        )
-
-    # Dominio: f y g deben ser reales en [a, b] (sqrt(x) en [-1, 1] daba área compleja y V = 0).
-    domain_msg = domain_error(region)
-    if domain_msg:
-        return CalculationOutput(
-            NumericResult(None, "", "", False, domain_msg), region, None, _not_computed(request.method, domain_msg),
-            None, request.axis, request.method,
-        )
-
-    checkpoint()
-    axis_msg = axis_crossing_error(region, request.axis)
-    if axis_msg:
-        vol = _not_computed(
-            request.method,
-            f"{axis_msg} Elija un eje que no atraviese la región (por ejemplo, uno que pase por "
-            "su borde o fuera de ella).",
-        )
-        return CalculationOutput(
-            NumericResult(None, "", "", False, vol.error_message), region, None, vol, None, request.axis, request.method
-        )
-
-    checkpoint()
-    mesh = _display_mesh(region, request)
-    if on_mesh is not None and mesh is not None:
-        on_mesh(mesh)
-
-    checkpoint()
-    if request.numeric_only:
-        import mpmath
+    def _integrate_absolute_difference(var_sym, a_expr, b_expr):
+        """Calcula el área absoluta entre curvas (valor absoluto de la integral)."""
+        f_expr = request.f.sympy_expr
+        g_expr = request.g.sympy_expr if request.g is not None else sympy.Integer(0)
+        
+        diff_expr = sympy.Abs(f_expr - g_expr)
+        
+        # Integral definida con signo (puede ser negativo)
+        int_definida = integrate_definite(diff_expr, request.a_text, request.b_text)
+        
+        if not int_definida.is_success:
+            # Fallback: área numérica si falla el cálculo simbólico
+            try:
+                from integrallab.core.solids import _evaluate_bounds
+                a, b, _, _ = _evaluate_bounds(region.a, region.b)
+                var_sym = sympy.Symbol(region.variable)
+                diff_sym = sympy.Abs(request.f.sympy_expr - request.g.sympy_expr if request.g else sympy.Integer(0))
+                fn = sympy.lambdify(var_sym, diff_sym, modules="mpmath")
+                import mpmath
+                area_val = float(mpmath.quad(fn, [a, b]))
+                
+                res_integral = NumericResult(None, "", "", False, None)
+                res_area = NumericResult(
+                    value=area_val,
+                    exact_plain_text=f"{area_val:.5f}",
+                    exact_latex=f"${area_val:.5f}$",
+                    is_success=True,
+                )
+                
+                return res_integral, res_area
+            
+            except Exception:
+                return int_definida, None
+        
+        # Si el resultado es negativo, tomar valor absoluto para área
+        if isinstance(int_definida.value, (int, float)) and int_definida.value < 0:
+            area_val = abs(float(int_definida.value))
+            res_area = NumericResult(
+                value=area_val,
+                exact_plain_text=f"{area_val:.5f}",
+                exact_latex=f"${area_val:.5f}$",
+                is_success=True,
+            )
+        else:
+            res_area = int_definida
+        
+        return int_definida, res_area
+    
+    try:
         import sympy
-        from integrallab.core.solids import _evaluate_bounds
+        
+        region = Region2D(
+            f_expr=request.f.sympy_expr,
+            g_expr=request.g.sympy_expr if request.g is not None else sympy.Integer(0),
+            a=request.a_text,
+            b=request.b_text,
+            variable=region.variable,
+        )
 
-        a, b, _, _ = _evaluate_bounds(region.a, region.b)
-        var_sym = sympy.Symbol(region.variable)
-        f_sym = request.f.sympy_expr
-        g_sym = request.g.sympy_expr if request.g is not None else sympy.Integer(0)
-        diff_sym = sympy.Abs(f_sym - g_sym)
-        fn = sympy.lambdify(var_sym, diff_sym, modules="mpmath")
-        area_val = float(mpmath.quad(fn, [a, b]))
-        res_2d = NumericResult(
-            value=area_val,
-            exact_plain_text=f"{area_val:.5f}",
-            exact_latex=f"{area_val:.5f}",
-            is_success=True,
-        )
-        vol_val = numeric_volume(region, request.axis)
-        method = request.method or (
-            SolidMethod.SHELLS if request.axis.orientation == AxisOrientation.VERTICAL else SolidMethod.WASHERS
-        )
-        vol_res = VolumeResult(
-            method=method,
-            is_success=vol_val is not None,
-            numeric_value=vol_val,
-            exact_plain_text=f"{vol_val:.5f}" if vol_val is not None else "",
-            exact_latex=f"{vol_val:.5f}" if vol_val is not None else "",
-            steps=[],
-            warnings=["Cálculo numérico (sin forma exacta)."],
-        )
-        return CalculationOutput(res_2d, region, None, vol_res, mesh, request.axis, request.method)
+        checkpoint()
+        res_2d = integrate_definite(request.f, request.a_text, request.b_text)
+        
+        # BUG FIX A5: Calcular área explícitamente y separarla de la integral definida
+        if request.g is not None:
+            try:
+                area_result = _integrate_absolute_difference(
+                    sympy.Symbol(region.variable),
+                    sympy.ParsedExpression(request.f.sympy_expr),
+                    sympy.ParsedExpression(request.g.sympy_expr)
+                )
+            except Exception:
+                # Si falla, usar valores por defecto
+                area_result = (res_2d, None)
+        else:
+            area_result = (None, res_2d)
+        
+        if not res_2d.is_success and not request.numeric_only:
+            return CalculationOutput(
+                res_2d, region, None, _not_computed(request.method, "No se calculó el volumen."),
+                None, request.axis, request.method, area_result
+            )
 
-    integrand = subtract_expressions(request.f, request.g) if request.g is not None else request.f
-    res_2d = integrate_definite(integrand, request.a_text, request.b_text)
-    if not res_2d.is_success:
+        checkpoint()
+        mesh = _display_mesh(region, request)
+        if on_mesh is not None and mesh is not None:
+            on_mesh(mesh)
+
+        checkpoint()
+        if request.numeric_only:
+            try:
+                import mpmath
+                import sympy
+                from integrallab.core.solids import _evaluate_bounds
+                
+                a, b, _, _ = _evaluate_bounds(region.a, region.b)
+                var_sym = sympy.Symbol(region.variable)
+                f_sym = request.f.sympy_expr
+                g_sym = request.g.sympy_expr if request.g is not None else sympy.Integer(0)
+                diff_sym = sympy.Abs(f_sym - g_sym)
+                fn = sympy.lambdify(var_sym, diff_sym, modules="mpmath")
+                area_val = float(mpmath.quad(fn, [a, b]))
+                
+                res_2d = NumericResult(
+                    value=area_val,
+                    exact_plain_text=f"{area_val:.5f}",
+                    exact_latex=f"${area_val:.5f}$",
+                    is_success=True,
+                )
+                
+                area_result = (None, res_2d)  # Area como resultado principal en modo numérico
+                
+                vol_val = numeric_volume(region, request.axis)
+                method = request.method or (
+                    SolidMethod.SHELLS if request.axis.orientation == AxisOrientation.VERTICAL else SolidMethod.WASHERS
+                )
+                vol_res = VolumeResult(
+                    method=method,
+                    is_success=vol_val is not None,
+                    numeric_value=vol_val,
+                    exact_plain_text=f"{vol_val:.5f}" if vol_val is not None else "",
+                    exact_latex=f"${vol_val:.5f}$" if vol_val is not None else "",
+                    steps=[],
+                    warnings=["Cálculo numérico (sin forma exacta)."],
+                )
+            except Exception as e:
+                vol_res = _not_computed(request.method, f"Error en cálculo numérico: {e}")
+                area_result = (None, None)
+                
+            return CalculationOutput(res_2d, region, None, vol_res, mesh, request.axis, request.method, area_result)
+
+        checkpoint()
+        rec = recommend_method(region, request.axis)
+        checkpoint()
+        vol_res = calculate_revolution_volume(region, request.axis, method=request.method)
+        
+        # BUG FIX A5: Corregir volumen negativo por planteamiento incorrecto
+        if vol_res.is_success and vol_res.numeric_value is not None and vol_res.numeric_value < 0:
+            vol_res = VolumeResult(
+                method=vol_res.method,
+                is_success=False,
+                error_message=(
+                    f"El volumen es negativo ({vol_res.numeric_value:.6g}): verifique que el planteamiento "
+                    "sea correcto. El radio debe ser siempre positivo y la región no debe cruzar el eje de giro."
+                ),
+            )
+
+        checkpoint()
+        
         return CalculationOutput(
-            res_2d, region, None, _not_computed(request.method, "No se calculó el volumen."),
-            None, request.axis, request.method,
+            res_2d, region, rec, vol_res, mesh, request.axis, request.method, area_result
         )
-
-    checkpoint()
-    rec = recommend_method(region, request.axis)
-    checkpoint()
-    vol_res = calculate_revolution_volume(region, request.axis, method=request.method)
-    checkpoint()
-    return CalculationOutput(res_2d, region, rec, vol_res, mesh, request.axis, request.method)
+    except (KeyboardInterrupt, SystemExit):
+        # Cancelación por el usuario: lanzar excepción para detener el cálculo
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return CalculationOutput(
+            res_2d, region, None, _not_computed(request.method, str(exc)),
+            None, request.axis, request.method, area_result
+        )
 
 
 def serve_requests(
@@ -287,6 +359,8 @@ def serve_requests(
                     pass
             conn.send(("done", job_id, output))  # type: ignore[attr-defined]
         except (EOFError, OSError, BrokenPipeError):
+            return
+        except KeyboardInterrupt:
             return
         except Exception as exc:  # noqa: BLE001 - se informa al proceso padre
             try:

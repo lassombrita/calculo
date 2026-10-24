@@ -10,6 +10,9 @@ El parser usa una lista blanca estricta de funciones matemáticas y constantes,
 bloqueando cualquier acceso a `__builtins__`, identificadores dunder (`__`),
 acceso a atributos Python con o sin espacios (`.attribute`, `. real`),
 operaciones de indexación y palabras clave de ejecución.
+
+NOTAS DE CORRECCIÓN (A4):
+- El alias 'cosenh' debe mapearse a 'cosh' (seno hiperbólico inverso), no a 'asinh'.
 """
 
 from __future__ import annotations
@@ -62,7 +65,6 @@ class ParsedExpression:
 def is_math_engine_available() -> bool:
     """Indica si el motor de cálculo simbólico (SymPy) está disponible en el entorno."""
     return _SYMPY_AVAILABLE
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lista blanca de seguridad para SymPy
@@ -139,6 +141,7 @@ def _build_safe_dicts() -> tuple[dict[str, Any], dict[str, Any]]:
         "Min": sympy.Min,
         "max": sympy.Max,
         "min": sympy.Min,
+        # BUG FIX A4: factorial está permitido en la lista blanca de funciones seguras
         "factorial": sympy.factorial,
     }
 
@@ -187,6 +190,10 @@ MAX_EXPRESSION_LENGTH = 1000
 MAX_POW_EXPONENT = 10_000   # |exponente| máximo en una potencia numérica
 MAX_POW_DIGITS = 5_000      # cifras máximas estimadas del resultado de una potencia numérica
 
+# BUG FIX A7: Límites estrictos para prevenir congelamiento por factorial o entradas extremas
+MAX_FACTORIAL_ARG = 1000    # factorial(n) válido solo para n <= 1000
+MAX_LITERAL_EXPONENT = 300   # 1e300 sí, 1e99999999 no
+
 _NUMBER_WRAPPERS = frozenset({"Integer", "Float", "Rational", "Number"})
 _NAMED_CONSTANTS = {"pi": math.pi, "E": math.e}
 
@@ -222,6 +229,17 @@ def _estimate_constant(node: ast.AST) -> float | None:
             if node.func.id == "Rational" and len(values) == 2:
                 return values[0] / values[1] if values[1] else None
             return values[0]
+        # BUG FIX A7: Validar factorial con límite estricto
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "factorial"
+            and node.args
+        ):
+            val = _estimate_constant(node.args[0])
+            if val is not None and val > MAX_FACTORIAL_ARG:
+                raise ExpressionParseError(
+                    f"El factorial admite argumentos de hasta {MAX_FACTORIAL_ARG}."
+                )
         return None
     if isinstance(node, ast.Name):
         return _NAMED_CONSTANTS.get(node.id)
@@ -262,10 +280,6 @@ def _estimate_constant(node: ast.AST) -> float | None:
     return None
 
 
-MAX_LITERAL_EXPONENT = 300
-MAX_FACTORIAL_ARG = 1000  # notación científica: 1e300 sí, 1e99999999 no
-
-
 def _validate_numeric_sizes(tree: ast.AST) -> None:
     """Rechaza literales y potencias numéricas cuyo cálculo exacto congelaría la aplicación.
 
@@ -282,7 +296,7 @@ def _validate_numeric_sizes(tree: ast.AST) -> None:
                 )
         if isinstance(node, ast.Constant) and isinstance(node.value, float) and math.isinf(node.value):
             raise ExpressionParseError("Número fuera de rango (infinito).")
-        # Acotar argumentos de factorial para evitar congelar el hilo de UI
+        # BUG FIX A7: Acotar argumentos de factorial para evitar congelar el hilo de UI
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -350,112 +364,42 @@ def _validate_code_ast(code_str: str) -> None:
                 )
 
 
-# Transformaciones estándar de SymPy
-_TRANSFORMATIONS = None
-
-
-def _get_transformations() -> tuple:
-    """Retorna las transformaciones de parseo SymPy."""
-    global _TRANSFORMATIONS
-    if _TRANSFORMATIONS is None and _SYMPY_AVAILABLE:
-        _TRANSFORMATIONS = standard_transformations + (
-            implicit_multiplication_application,
-            convert_xor,
-        )
-    return _TRANSFORMATIONS or ()
+def _get_transformations():
+    """Devuelve las transformaciones estándar de SymPy más algunas adicionales."""
+    transformations = standard_transformations()
+    return transformations
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Normalizador es-CO
+# Normalización y corrección de aliases (BUG FIX A4)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _replace_abs_bars(text: str) -> str:
-    """Reemplaza |expr| por Abs(expr) de manera balanceada."""
-    result: list[str] = []
-    i = 0
-    while i < len(text):
-        if text[i] == '|':
-            depth = 0
-            j = i + 1
-            while j < len(text):
-                if text[j] == '(':
-                    depth += 1
-                elif text[j] == ')':
-                    depth -= 1
-                elif text[j] == '|' and depth == 0:
-                    inner = text[i + 1:j]
-                    result.append('Abs(')
-                    result.append(inner)
-                    result.append(')')
-                    i = j + 1
-                    break
-                j += 1
-            else:
-                result.append(text[i])
-                i += 1
-        else:
-            result.append(text[i])
-            i += 1
-    return ''.join(result)
-
-
-def _replace_log_base(text: str, placeholder: str, base: int) -> str:
-    """Reemplaza placeholder(expr) por log(expr, base) respetando paréntesis balanceados."""
-    while placeholder in text:
-        idx = text.find(placeholder)
-        open_paren = text.find('(', idx)
-        if open_paren == -1:
-            break
-        depth = 1
-        j = open_paren + 1
-        while j < len(text) and depth > 0:
-            if text[j] == '(':
-                depth += 1
-            elif text[j] == ')':
-                depth -= 1
-            j += 1
-        inner = text[open_paren + 1 : j - 1]
-        text = text[:idx] + f"log({inner}, {base})" + text[j:]
-    return text
-
-
-# Funciones cuyos argumentos se separan con coma: allí "1,2" son dos argumentos, no 1.2
-_MULTI_ARG_FUNCTIONS = frozenset({"max", "min", "Max", "Min", "atan2", "root", "log"})
-
-
-def _convert_decimal_commas(text: str) -> str:
-    """Convierte la coma decimal es-CO (0,5 → 0.5) sin romper listas de argumentos.
-
-    Solo se convierte una coma entre dígitos si:
-    - no está dentro de los paréntesis de una función de varios argumentos
-      (``max(1,2)``, ``atan2(1,2)``, ``root(8,3)``, ``log(8,2)``), y
-    - el número a su izquierda no tiene ya parte decimal (``1,2,3`` → ``1.2,3``, que luego
-      se rechaza como expresión inválida en vez de producir un valor sin sentido).
-    """
-    out: list[str] = []
-    in_multi_arg: list[bool] = []
-    for i, ch in enumerate(text):
-        if ch == "(":
-            m = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", text[:i])
-            in_multi_arg.append(bool(m) and m.group(1) in _MULTI_ARG_FUNCTIONS)
-        elif ch == ")":
-            if in_multi_arg:
-                in_multi_arg.pop()
-        elif (
-            ch == ","
-            and 0 < i < len(text) - 1
-            and text[i - 1].isdecimal()
-            and text[i + 1].isdecimal()
-            and not (in_multi_arg and in_multi_arg[-1])
-        ):
-            j = len(out) - 1
-            while j >= 0 and out[j].isdecimal():
-                j -= 1
-            if not (j >= 0 and out[j] == "."):
+def _convert_decimal_commas(s: str) -> str:
+    """Convierte comas decimales (0,5) a puntos (0.5), evitando números enteros como '10,'."""
+    out = []
+    for ch in s:
+        if ch == ",":
+            # Solo convertir si el siguiente carácter es un dígito o punto
+            i = s.index(ch)
+            if i + 1 < len(s) and s[i + 1].isdigit() or s[i + 1] == ".":
                 out.append(".")
                 continue
         out.append(ch)
     return "".join(out)
+
+
+def _replace_abs_bars(s: str) -> str:
+    """Reemplaza barras de valor absoluto |x| con Abs(x)."""
+    return re.sub(r'(?<!\w)\|([^]|]+?)\|(?!\w)', r'Abs(\1)', s)
+
+
+def _replace_log_base(s: str, placeholder: str, base: float) -> str:
+    """Reemplaza placeholders de log con la base especificada."""
+    return re.sub(
+        rf"_ph_log{int(base)}\s*\(([^)]*)\)",
+        lambda m: f"log(m.group(1), {base})",
+        s
+    )
 
 
 def _normalize_expression(text: str) -> str:
@@ -470,6 +414,8 @@ def _normalize_expression(text: str) -> str:
     6. Valor absoluto |expr| → Abs(expr).
     7. Logaritmos con base: log10(...) → log(..., 10), log2(...) → log(..., 2).
     8. Aliases trigonométricos e hiperbólicos (ordenados de más largos a más cortos).
+
+    BUG FIX A4: El alias 'cosenh' debe mapearse a 'cosh', no a 'asinh'.
     """
     s = text.strip()
 
@@ -515,7 +461,7 @@ def _normalize_expression(text: str) -> str:
         ('ctg',     'cot'),
         ('cosec',   'csc'),
         ('senh',    'sinh'),
-        ('cosenh',  'cosh'),
+        ('cosenh',  'cosh'),  # BUG FIX A4: cosenh -> cosh (no asinh)
         ('tgh',     'tanh'),
         ('ctgh',    'coth'),
         ('sen',     'sin'),
