@@ -76,7 +76,7 @@ class CalculationOutput:
     y "Área entre curvas" (valor absoluto de la diferencia).
     """
 
-    res_2d: NumericResult
+    res_2d: IntegrationResult
     region: Region2D
     rec: MethodRecommendation | None
     vol_res: VolumeResult
@@ -84,7 +84,7 @@ class CalculationOutput:
     axis: RevolutionAxis
     chosen_method: SolidMethod | None
     # BUG FIX A5: Campo adicional para separar integral definida y área
-    area_result: tuple[NumericResult, NumericResult] | None = None  # (integral_definida, area)
+    area_result: tuple[IntegrationResult, IntegrationResult] | None = None  # (integral_definida, area)
 
 
 def _not_computed(method: SolidMethod | None, message: str) -> VolumeResult:
@@ -172,50 +172,54 @@ def run_calculation(
     def _integrate_absolute_difference(var_sym, a_expr, b_expr):
         """Calcula el área absoluta entre curvas (valor absoluto de la integral)."""
         f_expr = request.f.sympy_expr
-        g_expr = request.g.sympy_expr if request.g is not None else sympy.Integer(0)
+        g_expr = request.g.sympy_expr if request.g is not None else 0
         
         diff_expr = sympy.Abs(f_expr - g_expr)
         
         # Integral definida con signo (puede ser negativo)
-        int_definida = integrate_definite(diff_expr, request.a_text, request.b_text)
+        int_res = integrate(diff_expr, variable=request.variable, lower_limit=request.a_text, upper_limit=request.b_text)
         
-        if not int_definida.is_success:
+        if not int_res.is_success:
             # Fallback: área numérica si falla el cálculo simbólico
             try:
-                from integrallab.core.solids import _evaluate_bounds
-                a, b, _, _ = _evaluate_bounds(region.a, region.b)
+                a = float(region.a)
+                b = float(region.b)
                 var_sym = sympy.Symbol(region.variable)
                 diff_sym = sympy.Abs(request.f.sympy_expr - request.g.sympy_expr if request.g else sympy.Integer(0))
                 fn = sympy.lambdify(var_sym, diff_sym, modules="mpmath")
                 import mpmath
                 area_val = float(mpmath.quad(fn, [a, b]))
                 
-                res_integral = NumericResult(None, "", "", False, None)
-                res_area = NumericResult(
-                    value=area_val,
-                    exact_plain_text=f"{area_val:.5f}",
+                res_integral = IntegrationResult(method="numeric", value=None, exact_expression="", exact_latex="", is_success=False, error_message=None)
+                res_area = IntegrationResult(
+                    method="hybrid",
+                    value=float(area_val),
+                    exact_expression=f"{area_val:.5f}",
                     exact_latex=f"${area_val:.5f}$",
                     is_success=True,
+                    error_message=None,
                 )
                 
-                return res_integral, res_area
+                return int_res.value if int_res.value is not None else None, None
             
             except Exception:
-                return int_definida, None
+                return int_res.value if int_res.value is not None else None, None
         
         # Si el resultado es negativo, tomar valor absoluto para área
-        if isinstance(int_definida.value, (int, float)) and int_definida.value < 0:
-            area_val = abs(float(int_definida.value))
-            res_area = NumericResult(
-                value=area_val,
-                exact_plain_text=f"{area_val:.5f}",
+        if isinstance(int_res.value, (int, float)) and int_res.value < 0:
+            area_val = abs(float(int_res.value))
+            res_area = IntegrationResult(
+                method="hybrid",
+                value=float(area_val),
+                exact_expression=f"{area_val:.5f}",
                 exact_latex=f"${area_val:.5f}$",
                 is_success=True,
+                error_message=None,
             )
         else:
-            res_area = int_definida
+            res_area = int_res
         
-        return int_definida, res_area
+        return int_res.value if int_res.value is not None else None, res_area
     
     try:
         import sympy
@@ -229,15 +233,15 @@ def run_calculation(
         )
 
         checkpoint()
-        res_2d = integrate_definite(request.f, request.a_text, request.b_text)
+        res_2d = integrate(request.f.sympy_expr, variable=request.variable, lower_limit=request.a_text, upper_limit=request.b_text)
         
         # BUG FIX A5: Calcular área explícitamente y separarla de la integral definida
         if request.g is not None:
             try:
                 area_result = _integrate_absolute_difference(
                     sympy.Symbol(region.variable),
-                    sympy.ParsedExpression(request.f.sympy_expr),
-                    sympy.ParsedExpression(request.g.sympy_expr)
+                    request.f.sympy_expr,
+                    request.g.sympy_expr if request.g is not None else 0
                 )
             except Exception:
                 # Si falla, usar valores por defecto
@@ -261,9 +265,8 @@ def run_calculation(
             try:
                 import mpmath
                 import sympy
-                from integrallab.core.solids import _evaluate_bounds
-                
-                a, b, _, _ = _evaluate_bounds(region.a, region.b)
+                a = float(region.a)
+                b = float(region.b)
                 var_sym = sympy.Symbol(region.variable)
                 f_sym = request.f.sympy_expr
                 g_sym = request.g.sympy_expr if request.g is not None else sympy.Integer(0)
@@ -271,11 +274,13 @@ def run_calculation(
                 fn = sympy.lambdify(var_sym, diff_sym, modules="mpmath")
                 area_val = float(mpmath.quad(fn, [a, b]))
                 
-                res_2d = NumericResult(
-                    value=area_val,
-                    exact_plain_text=f"{area_val:.5f}",
+                res_2d = IntegrationResult(
+                    method="numeric",
+                    value=float(area_val),
+                    exact_expression=f"{area_val:.5f}",
                     exact_latex=f"${area_val:.5f}$",
                     is_success=True,
+                    error_message=None,
                 )
                 
                 area_result = (None, res_2d)  # Area como resultado principal en modo numérico

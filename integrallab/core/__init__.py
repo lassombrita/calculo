@@ -61,7 +61,7 @@ try:
         calculate_washer_volume,
         calculate_shell_volume,
         calculate_volume_from_region,
-        generate_mesh_3d,
+    
     )
 except ImportError:
     pass
@@ -70,7 +70,7 @@ except ImportError:
 # Módulo Solids (M5 - Migración de código legacy)
 # ============================================================
 try:
-    from integrallab.core.solids import (  # noqa: F401
+    from integrallab.core.solids import (
         AxisOrientation,
         RevolutionAxis,
         SolidMethod,
@@ -185,11 +185,11 @@ __all__ = [
     "calculate_washer_volume",
     "calculate_shell_volume",
     "calculate_volume_from_region",
-    "generate_mesh_3d",
     
     # Solids (M5 - migrado a Region2D)
     "AxisOrientation",
     "RevolutionAxis",
+    "SolidMesh3D",
     "SolidMethod",
     "SolutionStep",
     "SolidVolumeResult",
