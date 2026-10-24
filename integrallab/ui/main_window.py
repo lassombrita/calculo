@@ -23,7 +23,7 @@ import html
 import logging
 import math
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFrame,
+    QSlider,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -70,6 +72,10 @@ from integrallab.core.pipeline import (
 from integrallab.core.sampling import robust_y_window, sample_expression
 from integrallab.core.solids import (
     AxisOrientation,
+    _evaluate_bounds,
+    generate_representative_slice,
+    generate_riemann_mesh,
+    generate_solid_mesh,
     MethodRecommendation,
     Region2D,
     RevolutionAxis,
@@ -254,6 +260,11 @@ class MainWindow(QMainWindow):
         self._synchronous = False
         self._backend: ProcessCalculationBackend | None = None
         self._backend_failed_at: float | None = None
+        self._current_region: Region2D | None = None
+        self._current_axis: RevolutionAxis | None = None
+        self._revolution_timer: QTimer = QTimer(self)
+        self._revolution_timer.setInterval(25)
+        self._revolution_timer.timeout.connect(self._on_revolution_timer_tick)
         self._symbolic_timer = QTimer(self)
         self._symbolic_timer.setSingleShot(True)
         self._symbolic_timer.setInterval(8000)
@@ -485,7 +496,8 @@ class MainWindow(QMainWindow):
         self.solid_stack.addWidget(mpl_container)
 
         solid_layout.addWidget(engine_bar)
-        solid_layout.addWidget(self.solid_stack)
+        solid_layout.addWidget(self.solid_stack, stretch=1)
+        solid_layout.addWidget(self._build_3d_interactive_controls(solid_widget))
 
         self.engine_combo.currentIndexChanged.connect(self._on_engine_changed)
         self.tab_widget.addTab(solid_widget, "Sólido 3D")
@@ -731,6 +743,11 @@ class MainWindow(QMainWindow):
     def _clear_3d(self) -> None:
         self.canvas3d.clear_canvas()
         self.threejs_viewer.clear_canvas()
+        self._current_region = None
+        self._current_axis = None
+        if hasattr(self, "_revolution_timer") and self._revolution_timer.isActive():
+            self._revolution_timer.stop()
+        self._enable_3d_interactive_controls(False)
 
     def _reset_outputs(self, message: str, label: str | None = None) -> None:
         """Deja la interfaz coherente tras un error o una cancelación.
@@ -1136,6 +1153,13 @@ class MainWindow(QMainWindow):
             else:
                 self._clear_3d()
 
+        if out.mesh is not None and out.mesh.is_valid:
+            self._current_region = out.region
+            self._current_axis = out.axis
+            self._enable_3d_interactive_controls(True)
+        else:
+            self._enable_3d_interactive_controls(False)
+
         area_str = f"∫ [{ctx.a_text}, {ctx.b_text}] = {res_2d.exact_plain_text}"
         approx_vol = (
             f" ≈ {_fmt(vol_res.numeric_value)}" if vol_res.numeric_value is not None else ""
@@ -1178,6 +1202,8 @@ class MainWindow(QMainWindow):
         """Al cerrar, se cancela el trabajo; el hilo daemon no impide salir."""
         self._cancel_active_job()
         self._signals.blockSignals(True)
+        if hasattr(self, "_revolution_timer"):
+            self._revolution_timer.stop()
         if self._backend is not None:
             self._backend.shutdown()
         super().closeEvent(event)
@@ -1330,6 +1356,297 @@ class MainWindow(QMainWindow):
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
         dialog.exec()
 
+
+    # ── Panel interactivo 3D (Deslizadores estilo GeoGebra) ───────────────────
+
+    def _build_3d_interactive_controls(self, parent: QWidget) -> QWidget:
+        """Crea el panel de controles interactivos 3D (deslizadores de ángulo, rebanada y Riemann)."""
+        container = QWidget(parent=parent)
+        container.setObjectName("Interactive3DPanel")
+        container.setStyleSheet("""
+            QWidget#Interactive3DPanel {
+                background-color: rgba(15, 23, 42, 0.92);
+                border-top: 1px solid rgba(255, 255, 255, 0.15);
+                padding: 6px 12px;
+            }
+            QLabel {
+                font-size: 11px;
+                color: #e2e8f0;
+            }
+            QSlider::groove:horizontal {
+                height: 5px;
+                background: #334155;
+                border-radius: 2px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #0284c7;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #f8fafc;
+                border: 1px solid #0284c7;
+                width: 14px;
+                margin-top: -5px;
+                margin-bottom: -5px;
+                border-radius: 7px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #38bdf8;
+                border: 1px solid #ffffff;
+            }
+            QCheckBox {
+                font-size: 11px;
+                font-weight: 600;
+                color: #f1f5f9;
+                spacing: 6px;
+            }
+            QCheckBox::indicator {
+                width: 15px;
+                height: 15px;
+                border-radius: 3px;
+                border: 1px solid #64748b;
+                background-color: #1e293b;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #38bdf8;
+                background-color: #334155;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #0284c7;
+                border-color: #38bdf8;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(6)
+
+        # Fila 1: Rotación progresiva (estilo GeoGebra)
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
+
+        lbl_angle = QLabel("🔄 Rotación (θ):")
+        lbl_angle.setFixedWidth(88)
+        row1.addWidget(lbl_angle)
+
+        self.revolution_slider = QSlider(Qt.Orientation.Horizontal)
+        self.revolution_slider.setRange(5, 360)
+        self.revolution_slider.setValue(360)
+        self.revolution_slider.setEnabled(False)
+        self.revolution_slider.setToolTip("Ajusta el ángulo de revolución para abrir el sólido o rotarlo poco a poco.")
+        self.revolution_slider.valueChanged.connect(self._on_revolution_slider_changed)
+        row1.addWidget(self.revolution_slider)
+
+        self.revolution_angle_label = QLabel("360°")
+        self.revolution_angle_label.setFixedWidth(40)
+        self.revolution_angle_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        row1.addWidget(self.revolution_angle_label)
+
+        self.play_revolution_btn = QPushButton("▶ Girar poco a poco (GeoGebra)")
+        self.play_revolution_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.play_revolution_btn.setEnabled(False)
+        self.play_revolution_btn.setToolTip("Inicia la rotación continua de la curva para ver cómo barre el sólido paso a paso.")
+        self.play_revolution_btn.clicked.connect(self._toggle_revolution_animation)
+        row1.addWidget(self.play_revolution_btn)
+
+        self.reset_revolution_btn = QPushButton("↺ 360°")
+        self.reset_revolution_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reset_revolution_btn.setEnabled(False)
+        self.reset_revolution_btn.setToolTip("Restaura el sólido completo a 360°.")
+        self.reset_revolution_btn.clicked.connect(self._reset_revolution_to_full)
+        row1.addWidget(self.reset_revolution_btn)
+
+        layout.addLayout(row1)
+
+        # Fila 2: Exploración didáctica (Rebanada representativa y Discos de Riemann)
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+
+        self.slice_check = QCheckBox("Rebanada representativa (dx):")
+        self.slice_check.setEnabled(False)
+        self.slice_check.setToolTip("Muestra un disco/arandela individual en una posición específica del intervalo.")
+        self.slice_check.toggled.connect(self._on_slice_check_toggled)
+        row2.addWidget(self.slice_check)
+
+        self.slice_slider = QSlider(Qt.Orientation.Horizontal)
+        self.slice_slider.setRange(0, 1000)
+        self.slice_slider.setValue(500)
+        self.slice_slider.setEnabled(False)
+        self.slice_slider.setToolTip("Mueve la rebanada representativa a lo largo del intervalo [a, b].")
+        self.slice_slider.valueChanged.connect(self._on_slice_slider_changed)
+        row2.addWidget(self.slice_slider)
+
+        self.slice_pos_label = QLabel("x = —")
+        self.slice_pos_label.setFixedWidth(70)
+        row2.addWidget(self.slice_pos_label)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        row2.addWidget(sep)
+
+        self.riemann_check = QCheckBox("Discos de Riemann:")
+        self.riemann_check.setEnabled(False)
+        self.riemann_check.setToolTip("Aproxima el sólido geométrico mediante cilindros discretos de Riemann.")
+        self.riemann_check.toggled.connect(self._on_riemann_check_toggled)
+        row2.addWidget(self.riemann_check)
+
+        self.riemann_slider = QSlider(Qt.Orientation.Horizontal)
+        self.riemann_slider.setRange(4, 40)
+        self.riemann_slider.setValue(10)
+        self.riemann_slider.setEnabled(False)
+        self.riemann_slider.setToolTip("Ajusta la cantidad de discos de Riemann.")
+        self.riemann_slider.valueChanged.connect(self._on_riemann_slider_changed)
+        row2.addWidget(self.riemann_slider)
+
+        self.riemann_count_label = QLabel("N = 10")
+        self.riemann_count_label.setFixedWidth(45)
+        row2.addWidget(self.riemann_count_label)
+
+        layout.addLayout(row2)
+        return container
+
+    def _enable_3d_interactive_controls(self, enabled: bool) -> None:
+        """Habilita o deshabilita los controles del panel interactivo según si hay un sólido activo."""
+        if not hasattr(self, "revolution_slider"):
+            return
+        self.revolution_slider.setEnabled(enabled)
+        self.play_revolution_btn.setEnabled(enabled)
+        self.reset_revolution_btn.setEnabled(enabled)
+        self.slice_check.setEnabled(enabled)
+        self.slice_slider.setEnabled(enabled)
+        self.riemann_check.setEnabled(enabled)
+        self.riemann_slider.setEnabled(enabled)
+        if enabled:
+            self.revolution_slider.blockSignals(True)
+            self.revolution_slider.setValue(360)
+            self.revolution_angle_label.setText("360°")
+            self.revolution_slider.blockSignals(False)
+            self.play_revolution_btn.setText("▶ Girar poco a poco (GeoGebra)")
+            if self._current_region is not None:
+                num_a, num_b, _, _ = _evaluate_bounds(self._current_region.a, self._current_region.b)
+                mid_x = 0.5 * (num_a + num_b)
+                self.slice_pos_label.setText(f"{self._current_region.variable} = {mid_x:.2f}")
+        else:
+            if hasattr(self, "_revolution_timer") and self._revolution_timer.isActive():
+                self._revolution_timer.stop()
+            self.slice_check.blockSignals(True)
+            self.slice_check.setChecked(False)
+            self.slice_check.blockSignals(False)
+            self.riemann_check.blockSignals(True)
+            self.riemann_check.setChecked(False)
+            self.riemann_check.blockSignals(False)
+
+    def _on_revolution_slider_changed(self, value: int) -> None:
+        self.revolution_angle_label.setText(f"{value}°")
+        self._update_interactive_3d(fit_camera=False)
+
+    def _toggle_revolution_animation(self) -> None:
+        if self._revolution_timer.isActive():
+            self._revolution_timer.stop()
+            self.play_revolution_btn.setText("▶ Continuar giro")
+        else:
+            if self.revolution_slider.value() >= 360:
+                self.revolution_slider.setValue(5)
+            self._revolution_timer.start()
+            self.play_revolution_btn.setText("⏸ Pausar")
+
+    def _on_revolution_timer_tick(self) -> None:
+        val = self.revolution_slider.value()
+        if val >= 360:
+            self._revolution_timer.stop()
+            self.play_revolution_btn.setText("▶ Girar poco a poco (GeoGebra)")
+        else:
+            next_val = min(360, val + 4)
+            self.revolution_slider.setValue(next_val)
+
+    def _reset_revolution_to_full(self) -> None:
+        """Restaura el sólido completo continuo a 360° y limpia rebanadas/Riemann."""
+        if hasattr(self, "_revolution_timer") and self._revolution_timer.isActive():
+            self._revolution_timer.stop()
+            self.play_revolution_btn.setText("▶ Girar poco a poco (GeoGebra)")
+        self.slice_check.blockSignals(True)
+        self.slice_check.setChecked(False)
+        self.slice_check.blockSignals(False)
+        self.riemann_check.blockSignals(True)
+        self.riemann_check.setChecked(False)
+        self.riemann_check.blockSignals(False)
+        self.revolution_slider.setValue(360)
+        self.revolution_angle_label.setText("360°")
+        self._update_interactive_3d(fit_camera=False)
+
+    def _on_slice_check_toggled(self, checked: bool) -> None:
+        if checked and self.riemann_check.isChecked():
+            self.riemann_check.blockSignals(True)
+            self.riemann_check.setChecked(False)
+            self.riemann_check.blockSignals(False)
+        self._update_interactive_3d(fit_camera=False)
+
+    def _on_slice_slider_changed(self, _val: int) -> None:
+        if self._current_region is not None:
+            num_a, num_b, _, _ = _evaluate_bounds(self._current_region.a, self._current_region.b)
+            frac = self.slice_slider.value() / 1000.0
+            t_pos = num_a + frac * (num_b - num_a)
+            self.slice_pos_label.setText(f"{self._current_region.variable} = {t_pos:.2f}")
+        if not self.slice_check.isChecked():
+            self.slice_check.setChecked(True)
+        else:
+            self._update_interactive_3d(fit_camera=False)
+
+    def _on_riemann_check_toggled(self, checked: bool) -> None:
+        if checked and self.slice_check.isChecked():
+            self.slice_check.blockSignals(True)
+            self.slice_check.setChecked(False)
+            self.slice_check.blockSignals(False)
+        self._update_interactive_3d(fit_camera=False)
+
+    def _on_riemann_slider_changed(self, val: int) -> None:
+        self.riemann_count_label.setText(f"N = {val}")
+        if not self.riemann_check.isChecked():
+            self.riemann_check.setChecked(True)
+        else:
+            self._update_interactive_3d(fit_camera=False)
+
+    def _update_interactive_3d(self, fit_camera: bool = False) -> None:
+        if self._current_region is None or self._current_axis is None:
+            return
+
+        theta_rad = math.radians(self.revolution_slider.value())
+        num_a, num_b, _, _ = _evaluate_bounds(self._current_region.a, self._current_region.b)
+
+        if self.slice_check.isChecked():
+            frac = self.slice_slider.value() / 1000.0
+            t_pos = num_a + frac * (num_b - num_a)
+            self.slice_pos_label.setText(f"{self._current_region.variable} = {t_pos:.2f}")
+            mesh = generate_representative_slice(
+                self._current_region,
+                axis=self._current_axis,
+                position=t_pos,
+                theta_max=theta_rad,
+            )
+            color_outer = "#F59E0B"
+        elif self.riemann_check.isChecked():
+            n = self.riemann_slider.value()
+            self.riemann_count_label.setText(f"N = {n}")
+            mesh = generate_riemann_mesh(
+                self._current_region,
+                axis=self._current_axis,
+                num_disks=n,
+                theta_max=theta_rad,
+            )
+            color_outer = "#38BDF8"
+        else:
+            mesh = generate_solid_mesh(
+                self._current_region,
+                axis=self._current_axis,
+                theta_max=theta_rad,
+            )
+            color_outer = "#5CE1FF"
+
+        if mesh.is_valid:
+            self.canvas3d.plot_solid_mesh(mesh, color_outer=color_outer, show_axis=True)
+            self.threejs_viewer.plot_solid_mesh(mesh, color_outer=color_outer, show_axis=True, fit_camera=fit_camera)
+
     def export_to_pdf(self) -> None:
         """Abre el diálogo de guardado y exporta el desarrollo analítico a PDF.
 
@@ -1370,7 +1687,7 @@ class MainWindow(QMainWindow):
         if not file_path:
             return False
         try:
-            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            printer = QPrinter(QPrinter.PrinterMode.ScreenResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
             printer.setOutputFileName(file_path)
             self.steps_text.print_(printer)

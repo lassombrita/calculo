@@ -90,17 +90,18 @@ class ProcessCalculationBackend:
     # ── Ciclo de vida del proceso ────────────────────────────────────────────
 
     def _ensure_process(self) -> None:
-        if self._closed or (self._proc is not None and self._proc.is_alive()):
-            return
-        parent_conn, child_conn = self._ctx.Pipe(duplex=True)
-        proc = self._ctx.Process(
-            target=serve_calculations, args=(child_conn,), name="integrallab-calculo", daemon=True
-        )
-        with _without_parent_main():
-            proc.start()
-        child_conn.close()
-        self._proc, self._conn = proc, parent_conn
-        self._jobs_done = 0
+        with self._lock:
+            if self._closed or (self._proc is not None and self._proc.is_alive()):
+                return
+            parent_conn, child_conn = self._ctx.Pipe(duplex=True)
+            proc = self._ctx.Process(
+                target=serve_calculations, args=(child_conn,), name="integrallab-calculo", daemon=True
+            )
+            with _without_parent_main():
+                proc.start()
+            child_conn.close()
+            self._proc, self._conn = proc, parent_conn
+            self._jobs_done = 0
         threading.Thread(
             target=self._listen, args=(proc, parent_conn), name="integrallab-escucha", daemon=True
         ).start()
@@ -141,6 +142,8 @@ class ProcessCalculationBackend:
             self._jobs_done = 0
         if old_proc is not None:
             old_proc.terminate()
+            with contextlib.suppress(Exception):
+                old_proc.join(timeout=0.2)
         # La conexion de un proceso vivo la cierra su hilo oyente al recibir EOF.
         multiprocessing.active_children()  # recoge procesos terminados
         self._ensure_process()  # arranca proceso principal si no habia reserva
@@ -157,12 +160,16 @@ class ProcessCalculationBackend:
             self._running_job = None
         if proc is not None:
             proc.terminate()
+            with contextlib.suppress(Exception):
+                proc.join(timeout=0.2)
         elif conn is not None:
             _close_quietly(conn)
         if spare:
             sp_proc, sp_conn = spare
             if sp_proc is not None:
                 sp_proc.terminate()
+                with contextlib.suppress(Exception):
+                    sp_proc.join(timeout=0.2)
             elif sp_conn is not None:
                 _close_quietly(sp_conn)
 
@@ -174,13 +181,17 @@ class ProcessCalculationBackend:
 
     def submit(self, job_id: int, request: CalculationRequest) -> None:
         """Envía un trabajo. Si había otro en curso, se abandona terminando el proceso."""
-        if self._running_job is not None or self._jobs_done >= RECYCLE_AFTER_JOBS:
+        with self._lock:
+            needs_restart = self._running_job is not None or self._jobs_done >= RECYCLE_AFTER_JOBS
+        if needs_restart:
             self._restart()
         self._ensure_process()
         with self._lock:
             self._running_job = job_id
             conn = self._conn
         try:
+            if conn is None:
+                raise OSError("Conexión de tubería no disponible.")
             conn.send((job_id, request))
         except (OSError, ValueError):
             # El proceso murió entre la comprobación y el envío: un reintento con uno nuevo.
@@ -188,6 +199,8 @@ class ProcessCalculationBackend:
             with self._lock:
                 self._running_job = job_id
                 conn = self._conn
+            if conn is None:
+                raise OSError("No hay proceso de cálculo disponible tras reiniciar.")
             conn.send((job_id, request))
 
     def recycle_if_idle(self) -> bool:

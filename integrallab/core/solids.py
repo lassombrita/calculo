@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover
 
 from integrallab.core.adaptive import equidistributed_nodes
 from integrallab.core.parser import ParsedExpression, parse_math_expression
+from integrallab.core.sampling import REAL_EVAL_MODULES, prepare_expr_for_real_eval
 
 
 class AxisOrientation(str, Enum):
@@ -449,7 +450,7 @@ def _evaluate_profile(func: Callable[[float], object], ts: np.ndarray) -> np.nda
         try:
             value = func(float(t))
             if np.isreal(value):
-                out[i] = float(value)
+                out[i] = float(np.real(value))
         except (ArithmeticError, ValueError, TypeError):
             continue
     return out
@@ -523,7 +524,8 @@ def _scan_interior_roots(
         return "unknown", []
 
     try:
-        fn = sympy.lambdify(var_sym, expr, modules="numpy")
+        real_expr = prepare_expr_for_real_eval(expr)
+        fn = sympy.lambdify(var_sym, real_expr, modules=REAL_EVAL_MODULES)
     except Exception:
         return "unknown", []
 
@@ -1305,6 +1307,8 @@ def calculate_disk_volume(
         vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
 
         num_val = _numeric_value(vol_sym)
+        if num_val is None:
+            num_val = numeric_volume(region, axis)
 
         # Detectar resultado no finito (integral divergente o dominio imaginario)
         import math as _math
@@ -1341,7 +1345,11 @@ def calculate_disk_volume(
             integrand_latex=_clean_latex(sympy.latex(integrand)),
             integral_setup_latex=_clean_latex(
                 f"\\pi \\int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}}"
-                f" \\left({sympy.latex(r_outer**2)}\\right) d{region.variable}"
+                + (
+                    f" \\left({sympy.latex(r_outer**2)} - {sympy.latex(r_inner**2)}\\right) d{region.variable}"
+                    if has_void
+                    else f" \\left({sympy.latex(r_outer**2)}\\right) d{region.variable}"
+                )
             ),
             is_success=True,
             steps=steps,
@@ -1485,7 +1493,7 @@ def _build_piecewise_washer_steps(
     cl = _clean_latex
     steps: list[SolutionStep] = []
 
-    # Paso 1: Puntos de corte
+    # Paso 1: Puntos de intersección
     cross_points = [it["t1_sym"] for it in intervals[:-1]]
     cross_str = ", ".join(f"{var} = {p}" for p in cross_points)
     steps.append(
@@ -1498,8 +1506,8 @@ def _build_piecewise_washer_steps(
                 f"las regiones se resten incorrectamente, dividimos el dominio en "
                 f"{len(intervals)} subintervalos."
             ),
-            expression_plain_text=f"Intersecciones: {cross_str}",
-            expression_latex=cl(rf"\text{{Cortes en: }} {', '.join(sympy.latex(p) for p in cross_points)}"),
+            expression_plain_text=f"Intersección en: {cross_str}",
+            expression_latex=cl(rf"\text{{Intersección en: }}\; {cross_str}"),
         )
     )
 
@@ -1507,8 +1515,10 @@ def _build_piecewise_washer_steps(
     explanations = []
     latex_parts = []
     for idx, it in enumerate(intervals):
+        r_out_name = f"f({var})" if it.get("f_is_outer", True) else f"g({var})"
+        r_in_name = f"g({var})" if it.get("f_is_outer", True) else f"f({var})"
         explanations.append(
-            f"En [{it['t0_sym']}, {it['t1_sym']}]: R_ext({var}) = {it['r_outer']}, R_int({var}) = {it['r_inner']}"
+            f"En [{it['t0_sym']}, {it['t1_sym']}]: {r_out_name} queda en el exterior y {r_in_name} en el interior."
         )
         latex_parts.append(
             rf"I_{{{idx+1}}} = [{cl(it['t0_sym'])}, {cl(it['t1_sym'])}]: "
@@ -1519,7 +1529,7 @@ def _build_piecewise_washer_steps(
         SolutionStep(
             step_number=2,
             title="2. Radios exterior e interior en cada subintervalo",
-            explanation="; ".join(explanations),
+            explanation=" ".join(explanations),
             expression_plain_text="; ".join(explanations),
             expression_latex=cl(r" \quad ".join(latex_parts)),
         )
@@ -1640,6 +1650,8 @@ def calculate_washer_volume(
             integrand = sympy.pi * integrand_core
             vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
             num_val = _numeric_value(vol_sym)
+            if num_val is None:
+                num_val = numeric_volume(region, axis)
 
             steps = _build_volume_steps(
                 method=SolidMethod.WASHERS,
@@ -1686,6 +1698,8 @@ def calculate_washer_volume(
 
             vol_sym = sympy.simplify(sum(vol_partials))
             num_val = _numeric_value(vol_sym)
+            if num_val is None:
+                num_val = numeric_volume(region, axis)
 
             setup_latex = _clean_latex(" + ".join(setup_parts))
             steps = _build_piecewise_washer_steps(
@@ -1757,8 +1771,8 @@ def _build_piecewise_shell_steps(
                 f"casquillo es |f − g|, así que se integra en {len(pieces)} tramos, cada uno con la curva "
                 "de arriba menos la de abajo."
             ),
-            expression_plain_text=f"Intersecciones: {cuts_text}",
-            expression_latex=cl(rf"\text{{Cortes en: }} {', '.join(sympy.latex(c) for c in cuts)}"),
+            expression_plain_text=f"Intersección en: {cuts_text}",
+            expression_latex=cl(rf"\text{{Intersección en: }}\; {cuts_text}"),
         ),
         SolutionStep(
             step_number=2,
@@ -1858,6 +1872,8 @@ def calculate_shell_volume(
         ]
         vol_sym = sympy.Add(*vol_partials)
         num_val = _numeric_value(vol_sym)
+        if num_val is None:
+            num_val = numeric_volume(region, axis)
 
         if len(pieces) == 1:
             height_expr = pieces[0][2]
@@ -2108,11 +2124,12 @@ _AXIS_TOL = 1e-9
 def _sample_profile(expr: sympy.Expr, var_sym: sympy.Symbol, ts: np.ndarray) -> np.ndarray | None:
     """Evalúa ``expr`` en ``ts`` de forma vectorizada; ``None`` si no se puede (nan fuera del dominio)."""
     try:
-        fn = sympy.lambdify(var_sym, expr, modules="numpy")
+        real_expr = prepare_expr_for_real_eval(expr)
+        fn = sympy.lambdify(var_sym, real_expr, modules=REAL_EVAL_MODULES)
         with np.errstate(all="ignore"):
             values = np.asarray(fn(ts))
         if np.iscomplexobj(values):
-            values = np.where(np.abs(values.imag) < 1e-12, values.real, np.nan)
+            values = np.where(np.abs(values.imag) < 1e-9 * np.maximum(1.0, np.abs(values.real)), values.real, np.nan)
         values = values.astype(float)
         if values.ndim == 0:
             values = np.full(ts.shape, float(values))
@@ -2324,6 +2341,7 @@ def generate_solid_mesh(
     axis: RevolutionAxis | None = None,
     num_radial: int = 36,
     num_axial: int = 40,
+    theta_max: float = 2 * math.pi,
 ) -> SolidMesh3D:
     """Genera matrices numéricas (X, Y, Z) en NumPy para renderizar el sólido en 3D.
 
@@ -2364,8 +2382,10 @@ def generate_solid_mesh(
         num_a, num_b, _, _ = _evaluate_bounds(region.a, region.b)
 
         # Lambdificar funciones a NumPy/math para evaluación vectorial rápida
-        f_lamb = sympy.lambdify(var_sym, f_parsed.sympy_expr, modules=["numpy", "math"])
-        g_lamb = sympy.lambdify(var_sym, g_parsed.sympy_expr, modules=["numpy", "math"])
+        f_real = prepare_expr_for_real_eval(f_parsed.sympy_expr)
+        g_real = prepare_expr_for_real_eval(g_parsed.sympy_expr)
+        f_lamb = sympy.lambdify(var_sym, f_real, modules=REAL_EVAL_MODULES)
+        g_lamb = sympy.lambdify(var_sym, g_real, modules=REAL_EVAL_MODULES)
 
         # Nodos axiales en [a, b]: el giro angular es exacto, así que solo se densifica
         # a lo largo del perfil, siguiendo la longitud de arco de f y g. La cantidad de
@@ -2376,13 +2396,14 @@ def generate_solid_mesh(
             g_dense = _evaluate_profile(g_lamb, t_dense)
         t_vals = equidistributed_nodes(t_dense, [f_dense, g_dense], num_axial)
 
-        # Muestrear el ángulo angular [0, 2π]
-        theta_vals = np.linspace(0, 2 * np.pi, num_radial)
+        # Muestrear el ángulo angular en [0, theta_max] (permite apertura/barrido interactivo)
+        theta_bound = max(1e-4, min(2 * np.pi, float(theta_max)))
+        theta_vals = np.linspace(0, theta_bound, num_radial)
         T_grid, Theta_grid = np.meshgrid(t_vals, theta_vals, indexing="ij")
 
         # Evaluar valores de las funciones sobre el eje t
-        f_vals = np.array([float(f_lamb(t)) if np.isreal(f_lamb(t)) else np.nan for t in t_vals])
-        g_vals = np.array([float(g_lamb(t)) if np.isreal(g_lamb(t)) else np.nan for t in t_vals])
+        f_vals = np.array([float(np.real(f_lamb(t))) if np.isreal(f_lamb(t)) else np.nan for t in t_vals])
+        g_vals = np.array([float(np.real(g_lamb(t))) if np.isreal(g_lamb(t)) else np.nan for t in t_vals])
 
         if axis.orientation == AxisOrientation.HORIZONTAL:
             # Eje horizontal y = k
@@ -2453,3 +2474,144 @@ def generate_solid_mesh(
             is_valid=False,
             error_message=str(exc),
         )
+
+
+def generate_representative_slice(
+    region: Region2D,
+    axis: RevolutionAxis | None = None,
+    position: float | None = None,
+    thickness_factor: float = 0.04,
+    num_radial: int = 36,
+    theta_max: float = 2 * math.pi,
+) -> SolidMesh3D:
+    """Genera la malla de una rebanada o arandela representativa de espesor dx o dy.
+
+    Args:
+        region: Región plana que define el sólido.
+        axis: Eje de giro.
+        position: Coordenada axial donde situar la rebanada (por defecto, punto medio de [a, b]).
+        thickness_factor: Fracción del ancho del intervalo que ocupa el espesor de la rebanada.
+        num_radial: Resolución angular.
+        theta_max: Ángulo máximo de revolución en radianes.
+
+    Returns:
+        SolidMesh3D con la arandela o disco representativo en la posición seleccionada.
+    """
+    num_a, num_b, _, _ = _evaluate_bounds(region.a, region.b)
+    span = max(1e-5, num_b - num_a)
+    if position is None:
+        pos = num_a + 0.5 * span
+    else:
+        pos = max(num_a, min(num_b, float(position)))
+
+    dx = max(0.001, thickness_factor * span)
+    t0 = max(num_a, pos - 0.5 * dx)
+    t1 = min(num_b, pos + 0.5 * dx)
+    if t1 <= t0:
+        t1 = t0 + 0.01
+
+    sub_reg = Region2D(region.f_expr, region.g_expr, a=t0, b=t1, variable=region.variable)
+    return generate_solid_mesh(sub_reg, axis=axis, num_radial=num_radial, num_axial=2, theta_max=theta_max)
+
+
+def generate_riemann_mesh(
+    region: Region2D,
+    axis: RevolutionAxis | None = None,
+    num_disks: int = 10,
+    num_radial: int = 36,
+    theta_max: float = 2 * math.pi,
+) -> SolidMesh3D:
+    """Genera la aproximación escalonada por discos/arandelas cilíndricos de Riemann.
+
+    Args:
+        region: Región plana que define el sólido.
+        axis: Eje de giro.
+        num_disks: Cantidad de cilindros de Riemann en [a, b].
+        num_radial: Resolución angular.
+        theta_max: Ángulo de revolución en radianes.
+
+    Returns:
+        SolidMesh3D con la geometría escalonada discreta de Riemann.
+    """
+    axis = axis or RevolutionAxis.x_axis()
+    num_disks = max(2, min(50, int(num_disks)))
+    num_a, num_b, _, _ = _evaluate_bounds(region.a, region.b)
+    edges = np.linspace(num_a, num_b, num_disks + 1)
+
+    f_parsed = _ensure_parsed(region.f_expr)
+    g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
+    var_sym = sympy.Symbol(region.variable)
+    f_real = prepare_expr_for_real_eval(f_parsed.sympy_expr)
+    g_real = prepare_expr_for_real_eval(g_parsed.sympy_expr)
+    f_lamb = sympy.lambdify(var_sym, f_real, modules=REAL_EVAL_MODULES)
+    g_lamb = sympy.lambdify(var_sym, g_real, modules=REAL_EVAL_MODULES)
+
+    t_stepped: list[float] = []
+    f_stepped: list[float] = []
+    g_stepped: list[float] = []
+    for i in range(num_disks):
+        t_left, t_right = edges[i], edges[i + 1]
+        t_mid = 0.5 * (t_left + t_right)
+        try:
+            fv = float(np.real(f_lamb(t_mid))) if np.isreal(f_lamb(t_mid)) else np.nan
+        except Exception:
+            fv = np.nan
+        try:
+            gv = float(np.real(g_lamb(t_mid))) if np.isreal(g_lamb(t_mid)) else np.nan
+        except Exception:
+            gv = np.nan
+        t_stepped.extend([t_left, t_right])
+        f_stepped.extend([fv, fv])
+        g_stepped.extend([gv, gv])
+
+    t_vals = np.array(t_stepped)
+    f_vals = np.array(f_stepped)
+    g_vals = np.array(g_stepped)
+
+    theta_bound = max(1e-4, min(2 * np.pi, float(theta_max)))
+    theta_vals = np.linspace(0, theta_bound, num_radial)
+    T_grid, Theta_grid = np.meshgrid(t_vals, theta_vals, indexing="ij")
+
+    if axis.orientation == AxisOrientation.HORIZONTAL:
+        dist_f = np.abs(f_vals - axis.position)
+        dist_g = np.abs(g_vals - axis.position)
+        r_outer_1d = np.maximum(dist_f, dist_g)
+        r_inner_1d = np.minimum(dist_f, dist_g)
+        R_outer = np.repeat(r_outer_1d[:, np.newaxis], num_radial, axis=1)
+        R_inner = np.repeat(r_inner_1d[:, np.newaxis], num_radial, axis=1)
+        X_out = T_grid
+        Y_out = axis.position + R_outer * np.cos(Theta_grid)
+        Z_out = R_outer * np.sin(Theta_grid)
+        has_inner = bool(np.any(r_inner_1d > 1e-6))
+        if has_inner:
+            X_in = T_grid
+            Y_in = axis.position + R_inner * np.cos(Theta_grid)
+            Z_in = R_inner * np.sin(Theta_grid)
+        else:
+            X_in = Y_in = Z_in = None
+    else:
+        r_axial = np.abs(t_vals - axis.position)
+        R_grid = np.repeat(r_axial[:, np.newaxis], num_radial, axis=1)
+        y_top_1d = np.maximum(f_vals, g_vals)
+        y_bot_1d = np.minimum(f_vals, g_vals)
+        Y_out = np.repeat(y_top_1d[:, np.newaxis], num_radial, axis=1)
+        X_out = axis.position + R_grid * np.cos(Theta_grid)
+        Z_out = R_grid * np.sin(Theta_grid)
+        has_inner = bool(np.any(np.abs(y_top_1d - y_bot_1d) > 1e-6))
+        if has_inner:
+            Y_in = np.repeat(y_bot_1d[:, np.newaxis], num_radial, axis=1)
+            X_in = axis.position + R_grid * np.cos(Theta_grid)
+            Z_in = R_grid * np.sin(Theta_grid)
+        else:
+            X_in = Y_in = Z_in = None
+
+    return SolidMesh3D(
+        x_outer=X_out,
+        y_outer=Y_out,
+        z_outer=Z_out,
+        x_inner=X_in,
+        y_inner=Y_in,
+        z_inner=Z_in,
+        axis=axis,
+        is_valid=True,
+    )

@@ -1,25 +1,26 @@
-# Estado del proyecto ? IntegralLab
+# Estado del proyecto — IntegralLab
 
-> Este archivo se actualiza **al terminar cada sesion** de trabajo.
-> Ultima actualizacion: **2026-10-22** ? Sesion 15: Parche Plan A (auditoria ronda 3), correccion del cierre de tuberias en Windows, e implementacion de mejoras pendientes P1-P4. **299 pruebas pasando (1 omitida: exclusiva Linux).**
+> Este archivo se actualiza **al terminar cada sesión** de trabajo.
+> Última actualización: **2026-10-23** — Sesión 18: Deslizadores 3D reactivos (desvinculación de checkbox bloqueante, auto-activación de rebanada dx y Riemann al arrastrar, Three.js WebGL sin salto de cámara vía `fit_camera: false`, e indicadores estilizados en dark mode). **302 pruebas pasando (1 omitida: exclusiva Linux).**
 
-> **Fases 1-12 completadas**: Selector de metodo, muestreo adaptativo, lienzo 3D a escala real, exportacion PDF, diseno *glass/dark*, interpolacion numerica (Lagrange/Newton/Splines naturales), Three.js WebGL offline, arandelas por tramos, motor pedagogico y blindaje de seguridad matematica.
+> **Fases 1-12 completadas**: Selector de método, muestreo adaptativo, lienzo 3D a escala real, exportación PDF, diseño *glass/dark*, interpolación numérica (Lagrange/Newton/Splines naturales), Three.js WebGL offline, arandelas por tramos, motor pedagógico y blindaje de seguridad matemática.
 
-> **Auditoria Ronda 3 + Parche Plan A (2026-10-22)**:
-> - [x] Parche `calculo-planA-parche-unico.patch` aplicado sobre commit limpio `c2eddc9`.
-> - [x] Correccion de cierre de tuberias `multiprocessing` en Windows: `_listen_loop` usa `conn.poll(0.1)`.
-> - [x] **P1**: `numeric_volume()` en `solids.py`, `numeric_only` en `CalculationRequest`, fallback numerico de 8 s.
-> - [x] **P2**: Proceso de reserva `_spare` en `ProcessCalculationBackend` ? reemplazo instantaneo.
-> - [x] **P3**: `threejs_wrapper._dispatch_render` envuelve `renderSolid` en try/catch JS.
-> - [x] **P4**: Temporizador simbolico 8 s + reintento automatico de backend tras 30 s.
-
+> **Auditoría Enterprise & Suite 3D GeoGebra (2026-10-22)**:
+> - [x] **Bug 1 (P0)**: Import de `replace` desde `dataclasses` en `main_window.py` para evitar NameError en timeout numérico.
+> - [x] **Bug 2 (P0)**: Evaluación exacta de raíces de orden impar en dominio real negativo (`cbrt(x)`, `x**(1/3)`) vía `prepare_expr_for_real_eval` + `REAL_EVAL_MODULES` en `sampling.py` y `solids.py`, y fallback de cuadratura robusto en `_compute_disks`/`washers`/`shells`.
+> - [x] **Bug 3 (P0)**: Cierre de condición de carrera en `calc_backend.py`: `_ensure_process` protegido con `self._lock` y guarda `conn is None` en `submit()`.
+> - [x] **Bug 4 (P1)**: Ajuste de resolución en exportación a PDF (`QPrinter.PrinterMode.ScreenResolution`) en `main_window.py`.
+> - [x] **Bug 5 (P1)**: Corrección de fórmula LaTeX en `integral_setup_latex` de `solids.py` para restar el radio interno al cuadrado si `has_void=True`.
+> - [x] **Bug 6 (P1)**: Eliminación de variable huérfana en `latex_render.py` y refuerzo de sanitización XSS y placeholders.
+> - [x] **Claridad pedagógica**: Sustitución de la etiqueta ambigua «Cortes en: 1» por «Intersección en: x = 1» y eliminación del volcado crudo `Abs(sqrt(x))` por descripciones didácticas en lenguaje natural.
+> - [x] **Suite de Deslizadores 3D**: Deslizador de revolución angular theta en [5°, 360°], botón de animación automática paso a paso (GeoGebra), deslizador de rebanada representativa dx/dy y aproximación escalonada por discos de Riemann.
 
 ## Fase actual
 
-- Fase 11: Refinamiento pedagogico  COMPLETADA
-- Fase 12: Interpolacion numerica, dy, Three.js  COMPLETADA
-- Auditoria tecnica  COMPLETADA
-- Sesion 15: Plan A + correcciones Windows + P1-P4  COMPLETADA (299/300 tests)
+- Fase 11: Refinamiento pedagógico — COMPLETADA
+- Fase 12: Interpolación numérica, dy, Three.js — COMPLETADA
+- Auditoría técnica Enterprise — COMPLETADA
+- Sesión 17: Deslizadores 3D GeoGebra + Claridad pedagógica — COMPLETADA (302/303 tests)
 
 ## Estado por fases
 

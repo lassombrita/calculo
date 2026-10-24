@@ -486,3 +486,86 @@ def test_ui_dual_engine_3d_selector(window: MainWindow) -> None:
     # Conmutar de vuelta a WebGL
     window.engine_combo.setCurrentIndex(0)
     assert window.solid_stack.currentIndex() == 0
+
+
+def test_ui_3d_interactive_controls_presence_and_behavior(window: MainWindow) -> None:
+    """Verifica que el panel interactivo 3D contenga los deslizadores y responda a las acciones."""
+    assert hasattr(window, "revolution_slider")
+    assert hasattr(window, "play_revolution_btn")
+    assert hasattr(window, "reset_revolution_btn")
+    assert hasattr(window, "slice_check")
+    assert hasattr(window, "slice_slider")
+    assert hasattr(window, "riemann_check")
+    assert hasattr(window, "riemann_slider")
+
+    # Inicialmente deshabilitados
+    assert not window.revolution_slider.isEnabled()
+    assert not window.play_revolution_btn.isEnabled()
+    assert not window.slice_check.isEnabled()
+    assert not window.riemann_check.isEnabled()
+
+    # Generar un sólido
+    window.expression_input.setText("x**2")
+    window.limit_a_input.setText("0")
+    window.limit_b_input.setText("1")
+    window.axis_combo.setCurrentIndex(0)
+    window._on_plot_clicked()
+
+    # Tras graficar, se habilitan los controles interactivos
+    assert window.revolution_slider.isEnabled()
+    assert window.play_revolution_btn.isEnabled()
+    assert window.slice_check.isEnabled()
+    assert window.riemann_check.isEnabled()
+    assert window.revolution_slider.value() == 360
+
+    # Ajustar ángulo de rotación a 180°
+    window.revolution_slider.setValue(180)
+    assert window.revolution_angle_label.text() == "180°"
+
+    # Resetear a 360°
+    window.reset_revolution_btn.click()
+    assert window.revolution_slider.value() == 360
+    assert window.revolution_angle_label.text() == "360°"
+
+    # Activar rebanada representativa
+    window.slice_check.setChecked(True)
+    assert window.slice_slider.isEnabled()
+    window.slice_slider.setValue(750)
+    assert "x =" in window.slice_pos_label.text()
+
+    # Activar discos de Riemann (desactiva rebanada)
+    window.riemann_check.setChecked(True)
+    assert not window.slice_check.isChecked()
+    assert window.riemann_slider.isEnabled()
+    window.riemann_slider.setValue(15)
+    assert window.riemann_count_label.text() == "N = 15"
+
+    # Iniciar animación de giro
+    window.play_revolution_btn.click()
+    assert window._revolution_timer.isActive()
+    assert "Pausar" in window.play_revolution_btn.text()
+
+    # Pausar animación
+    window.play_revolution_btn.click()
+    assert not window._revolution_timer.isActive()
+    assert "Continuar" in window.play_revolution_btn.text()
+
+    # Mover deslizador de rebanada directamente la activa sin necesidad de clic manual previo
+    window.reset_revolution_btn.click()
+    assert not window.slice_check.isChecked()
+    assert not window.riemann_check.isChecked()
+    window.slice_slider.setValue(250)
+    assert window.slice_check.isChecked()
+    assert "x = 0.25" in window.slice_pos_label.text()
+
+    # Mover deslizador de Riemann directamente conmuta a modo Riemann
+    window.riemann_slider.setValue(25)
+    assert window.riemann_check.isChecked()
+    assert not window.slice_check.isChecked()
+    assert window.riemann_count_label.text() == "N = 25"
+
+    # Reset restaura a sólido continuo 360°
+    window.reset_revolution_btn.click()
+    assert not window.slice_check.isChecked()
+    assert not window.riemann_check.isChecked()
+    assert window.revolution_slider.value() == 360

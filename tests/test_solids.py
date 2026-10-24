@@ -696,3 +696,19 @@ def test_no_false_crossing_warning_at_interval_endpoints(f, g, a, b, method) -> 
     result = calculate_revolution_volume(Region2D(f, g, a, b), RevolutionAxis.x_axis(), method)
     assert result.is_success
     assert not any("se cruzan" in w for w in (result.warnings or []))
+
+def test_cbrt_solid_and_mesh_real_domain() -> None:
+    """Verifica que cbrt(x) en intervalo negativo [-8, 8] no falle y genere malla sin NaNs."""
+    region = Region2D(f_expr="cbrt(x)", a=-8, b=8)
+    axis = RevolutionAxis.x_axis()
+
+    mesh = generate_solid_mesh(region, axis=axis)
+    assert mesh.is_valid
+    assert not np.isnan(mesh.x_outer).any()
+    assert not np.isnan(mesh.y_outer).any()
+    assert not np.isnan(mesh.z_outer).any()
+
+    res = calculate_revolution_volume(region, axis=axis)
+    assert res.is_success
+    assert res.numeric_value is not None
+    assert math.isclose(res.numeric_value, 120.63715789784806, rel_tol=1e-3)

@@ -86,3 +86,18 @@ def test_robust_y_window_only_for_extreme_values() -> None:
     assert robust_y_window([parabola]) is None
     assert robust_y_window([CurveData(is_valid=False)]) is None
 
+
+
+def test_sample_cbrt_negative_x_returns_real_values() -> None:
+    """Verifica que cbrt(x) y potencias de orden impar devuelvan valores reales en x < 0."""
+    curve = sample_expression("cbrt(x)", x_min=-8.0, x_max=8.0, num_points=9)
+    assert curve.is_valid
+    assert not any(math.isnan(y) for y in curve.y_values)
+    assert math.isclose(curve.y_values[0], -2.0, rel_tol=1e-5)
+    assert math.isclose(curve.y_values[-1], 2.0, rel_tol=1e-5)
+
+    curve_pow = sample_expression("x**(1/3)", x_min=-8.0, x_max=8.0, num_points=9)
+    assert curve_pow.is_valid
+    assert not any(math.isnan(y) for y in curve_pow.y_values)
+    assert math.isclose(curve_pow.y_values[0], -2.0, rel_tol=1e-5)
+    assert math.isclose(curve_pow.y_values[-1], 2.0, rel_tol=1e-5)

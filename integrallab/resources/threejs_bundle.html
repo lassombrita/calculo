@@ -248,12 +248,13 @@
                 for (let i = 0; i < rows; i++) {
                     pos.set(src.subarray(i * cols * 3, (i * cols + uc) * 3), i * uc * 3);
                 }
+                const numQuadsJ = duplicatedSeam ? uc : uc - 1;
                 const IndexArray = rows * uc > 65535 ? Uint32Array : Uint16Array;
-                const idx = new IndexArray((rows - 1) * uc * 6);
+                const idx = new IndexArray((rows - 1) * numQuadsJ * 6);
                 let k = 0;
                 for (let i = 0; i < rows - 1; i++) {
-                    for (let j = 0; j < uc; j++) {
-                        const jn = (j + 1) % uc;
+                    for (let j = 0; j < numQuadsJ; j++) {
+                        const jn = duplicatedSeam ? (j + 1) % uc : j + 1;
                         const v00 = i * uc + j, v01 = i * uc + jn;
                         const v10 = (i + 1) * uc + j, v11 = (i + 1) * uc + jn;
                         idx[k++] = v00; idx[k++] = v10; idx[k++] = v01;
@@ -264,7 +265,7 @@
                 geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
                 geometry.setIndex(new THREE.BufferAttribute(idx, 1));
                 geometry.computeVertexNormals();
-                return { geometry, pos, rows, uc };
+                return { geometry, pos, rows, uc, duplicatedSeam };
             }
 
             /**
@@ -280,8 +281,9 @@
                 if (inner && (inner.rows !== outer.rows || inner.uc !== outer.uc)) return null;
                 if (!inner && axis.orientation !== 'horizontal') return null;
                 const uc = outer.uc;
+                const numCapQuads = outer.duplicatedSeam ? uc : uc - 1;
                 const verts = new Float32Array(2 * uc * 3);
-                const idx = new (2 * uc > 65535 ? Uint32Array : Uint16Array)(uc * 6);
+                const idx = new (2 * uc > 65535 ? Uint32Array : Uint16Array)(numCapQuads * 6);
                 let vk = 0, ik = 0, radius = 0;
                 for (let j = 0; j < uc; j++) {
                     const o = (r * uc + j) * 3;
@@ -298,8 +300,8 @@
                         verts[vk++] = outer.pos[(r * uc) * 3]; verts[vk++] = axis.position; verts[vk++] = 0;
                     }
                 }
-                for (let j = 0; j < uc; j++) {
-                    const jn = (j + 1) % uc;
+                for (let j = 0; j < numCapQuads; j++) {
+                    const jn = outer.duplicatedSeam ? (j + 1) % uc : j + 1;
                     const a = j, b = jn, c = uc + j, d = uc + jn;
                     idx[ik++] = a; idx[ik++] = c; idx[ik++] = b;
                     idx[ik++] = b; idx[ik++] = c; idx[ik++] = d;
@@ -384,7 +386,7 @@
                     }
                 }
 
-                fitCameraToObject(solidGroup);
+                if (data.fit_camera !== false) fitCameraToObject(solidGroup);
                 controls.autoRotate = prefs.autoRotate;
                 requestRender();
             }

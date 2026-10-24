@@ -165,6 +165,7 @@ def encode_solid_mesh(
     color_inner: str = "#FF6B8A",
     alpha: float = 0.6,
     show_axis: bool = True,
+    fit_camera: bool = True,
 ) -> dict[str, Any]:
     """Versión compacta de ``serialize_solid_mesh`` para el puente con JavaScript.
 
@@ -179,6 +180,7 @@ def encode_solid_mesh(
         "color_outer": color_outer,
         "color_inner": color_inner,
         "alpha": alpha,
+        "fit_camera": fit_camera,
         "outer": _encode_grid(mesh.x_outer, mesh.y_outer, mesh.z_outer),
         "axis": {
             "orientation": "horizontal" if mesh.axis.orientation == AxisOrientation.HORIZONTAL else "vertical",
@@ -316,6 +318,7 @@ class ThreeJSViewer(QWidget):
         alpha: float = 0.6,
         show_axis: bool = True,
         clear: bool = True,
+        fit_camera: bool = True,
     ) -> bool:
         """Renderiza una malla tridimensional de revolución en Three.js.
 
@@ -339,6 +342,7 @@ class ThreeJSViewer(QWidget):
             color_inner=color_inner,
             alpha=alpha,
             show_axis=show_axis,
+            fit_camera=fit_camera,
         )
         if not data:
             return False
@@ -354,7 +358,8 @@ class ThreeJSViewer(QWidget):
         if not self._view:
             return False
 
-        json_data = json.dumps(data, separators=(",", ":"))
+        # Escapar < y > para evitar cualquier cierre de contexto o inyección en el evaluador JS
+        json_data = json.dumps(data, separators=(",", ":")).replace("<", "\\u003c").replace(">", "\\u003e")
         js_code = (
             "(window.IntegralLab3D && window.IntegralLab3D.renderSolid) ? "
             f"window.IntegralLab3D.renderSolid({json_data}) : null"

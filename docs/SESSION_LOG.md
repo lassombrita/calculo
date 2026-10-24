@@ -816,3 +816,120 @@
 
 ### Verificaci?n
 - Suite completa de pruebas ejecutada: **299 pruebas aprobadas al 100 %**, 1 prueba omitida (`test_calc_process_exits_when_the_ui_dies` por dise?o espec?fico de `/proc` en Linux), 0 fallos.
+
+---
+
+## Sesión 16 — Auditoría Enterprise y Resolución Integral de Vulnerabilidades y Regresiones
+
+**Fecha:** 2026-10-22  
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0 · SymPy 1.14.0 · Matplotlib 3.11.2 · NumPy 2.5.4 · pytest 9.1.1
+
+### Diagnóstico
+- Auditoría técnica, estructural y visual exhaustiva de grado empresarial sobre el flujo integral de la aplicación.
+- Detección de regresión en `latex_render.py` por escape de entidades HTML que quebraba MathText en desigualdades y violaba el contrato de salida ante cadenas vacías y errores de renderizado.
+- Detección de riesgos de condición de carrera en `submit()` y retención de descriptores de procesos zombi en `calc_backend.py`.
+- Detección de riesgo de inyección por interpolación directa de JSON sin escape de delimitadores en `threejs_wrapper.py`.
+
+### Correcciones Aplicadas
+1. **Restauración del contrato de `latex_render.py`**:
+   - Eliminado `html.escape` previo a MathText en `_sanitize_latex_for_mathtext`, preservando símbolos matemáticos legítimos (`<`, `>`, `&`).
+   - Restituido el contrato de salida en `latex_to_base64_html`: retorno de `""` ante entradas vacías y formato `<code style="...">` en excepciones con texto de respaldo sanitizado para atributos HTML.
+2. **Blindaje de concurrencia y recolección de procesos (`calc_backend.py`)**:
+   - `submit()` verifica la necesidad de reinicio bajo el candado de exclusión mutua `self._lock`, evitando colisiones por peticiones asíncronas concurrentes.
+   - `_restart()` y `shutdown()` invocan `proc.join(timeout=0.2)` tras `terminate()`, previniendo descriptores zombi retenidos en Windows.
+3. **Seguridad contra inyección en el puente Three.js (`threejs_wrapper.py`)**:
+   - En `_dispatch_render`, la serialización JSON escapa secuencias `<` y `>` a `\u003c` y `\u003e`, bloqueando cualquier potencial escape del contexto de evaluación de V8 en QtWebEngine.
+4. **Verificación de suite de pruebas**:
+   - **299 pruebas pasando (100% de las pruebas aplicables en Windows)**, 1 omitida (exclusiva de Linux `prctl`), 0 fallos.
+
+
+---
+
+## Sesión 17 — Corrección Integral de Hallazgos Críticos y P1 de la Auditoría
+
+**Fecha:** 2026-10-22  
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0 · SymPy 1.14.0 · Matplotlib 3.11.2 · NumPy 2.5.4 · pytest 9.1.1
+
+### Diagnóstico y Hallazgos
+1. **Bug 1 (P0 - Crítico en UI)**: `_on_symbolic_timeout` en `main_window.py` llamaba a `replace(self._current_request, numeric_only=True)` sin haber importado `replace` desde el módulo estándar `dataclasses`, provocando un `NameError` catastrófico cuando vencía el temporizador simbólico de 8 segundos.
+2. **Bug 2 (P0 - Crítico en Dominio Matemático)**: Evaluación de raíces de orden impar (`cbrt(x)`, `x**(1/3)`, etc.) para $x < 0$. Tanto Python nativo como NumPy evalúan $(-8)^{1/3}$ en la rama principal de los números complejos ($1.0 + 1.732j$). Esto provocaba que `_sample_profile` y `sample_expression` descartaran las coordenadas como no reales (`NaN`), haciendo que `_first_non_real` bloqueara regiones válidas en $\mathbb{R}$ y que `generate_solid_mesh` generara mallas incompletas con NaNs.
+3. **Bug 3 (P0 - Concurrencia en Backend)**: `_ensure_process` en `calc_backend.py` no adquiría de manera estricta `self._lock`, posibilitando condiciones de carrera si dos solicitudes coincidían con la muerte o reinicio del subproceso. Asimismo, `submit()` no validaba defensivamente `if conn is None` tras el arranque.
+4. **Bug 4 (P1 - Calidad Visual en PDF)**: `_export_to_pdf_path` utilizaba `QPrinter.PrinterMode.HighResolution` (1200 DPI), provocando que las imágenes de fórmulas generadas a 150-200 DPI se renderizaran microscópicas en el documento PDF exportado.
+5. **Bug 5 (P1 - Coherencia en LaTeX)**: En `solids.py`, `integral_setup_latex` en el método de discos no restaba el radio interno cuando `has_void=True` (caso de arandelas con eje desplazado o región con hueco).
+6. **Bug 6 (P1 - Código Muerto)**: Variable `sanitized` huérfana en `latex_to_base64_html` de `latex_render.py`.
+
+### Correcciones Aplicadas
+1. **Bug 1 Resuelto**: Se importó `replace` desde `dataclasses` en `integrallab/ui/main_window.py`.
+2. **Bug 2 Resuelto**:
+   - Se diseñó e implementó `prepare_expr_for_real_eval(expr)` y `REAL_EVAL_MODULES` en `integrallab/core/sampling.py`, mapeando potencias de denominador impar (`cbrt`, $x^{1/3}$, etc.) a funciones numéricas vectorizadas reales (`np.cbrt` y `_real_root_num`).
+   - Se integró `prepare_expr_for_real_eval` en `sampling.py:sample_expression` y en `solids.py`: `_sample_profile`, `find_curve_crossings` y `generate_solid_mesh`.
+   - Se blindó `_evaluate_profile` para tomar `float(np.real(value))` cuando `np.isreal(value)`.
+   - Se añadió fallback de cálculo numérico `numeric_volume(region, axis)` en `_compute_disks`, `_compute_washers` y `_compute_shells` para rescatar el volumen exacto cuando la evaluación simbólica `vol_sym.evalf()` contenga residuos de ramas complejas de SymPy.
+3. **Bug 3 Resuelto**: En `integrallab/ui/calc_backend.py`, se colocó `_ensure_process` bajo la protección de `with self._lock:` y se verificó `if conn is None:` al inicio de `submit()`.
+4. **Bug 4 Resuelto**: En `integrallab/ui/main_window.py`, se ajustó `QPrinter(QPrinter.PrinterMode.ScreenResolution)` asegurando escala visual idéntica entre pantalla y PDF.
+5. **Bug 5 Resuelto**: En `solids.py`, `integral_setup_latex` ahora evalúa condicionalmente si `has_void=True` para restar `r_inner**2`.
+6. **Bug 6 Resuelto**: Se eliminó la variable muerta en `integrallab/viz/latex_render.py`.
+7. **Nuevas Pruebas Unitarias**:
+   - `tests/test_sampling.py::test_sample_cbrt_negative_x_returns_real_values`
+   - `tests/test_solids.py::test_cbrt_solid_and_mesh_real_domain`
+
+### Verificación
+- Suite completa ejecutada: **301 pruebas aprobadas al 100 %**, 1 prueba omitida (Linux-only), 0 fallos.
+
+
+---
+
+## Sesión 18 — Suite Interactiva 3D Estilo GeoGebra y Claridad Pedagógica
+
+**Fecha:** 2026-10-22  
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0 · SymPy 1.14.0 · Matplotlib 3.11.2 · NumPy 2.5.4 · pytest 9.1.1
+
+### Diagnóstico y Petición del Usuario
+1. **Confusión terminológica en desarrollo analítico**: La etiqueta `Cortes en: 1` resultaba ambigua e incomprensible para el usuario, confundiéndose con cortes/rebanadas transversales en vez de puntos de intersección entre curvas frontera.
+2. **Volcado en texto plano sin formato**: El Paso 2 («Radios exterior e interior») mostraba representaciones crudas de cadenas Python con `Abs(...)` y `**2` en vez de descripciones didácticas y fórmulas matemáticas limpias.
+3. **Ausencia de controles deslizantes interactivos (Sliders)**: No existía la posibilidad de abrir el sólido en un ángulo intermedio, rotar la función paso a paso en tiempo real para visualizar cómo barre el volumen como en GeoGebra, ni situar rebanadas representativas ($dx$) o aproximaciones discretas por discos de Riemann.
+
+### Soluciones Implementadas
+1. **Refinamiento Pedagógico en `solids.py`**:
+   - Reemplazada la expresión `\text{Cortes en: }` por `\text{Intersección en: } x = 1` en títulos, descripciones y fórmulas LaTeX de métodos por tramos (arandelas y casquillos).
+   - Reemplazado el volcado de texto crudo de radios en el Paso 2 por explicaciones en lenguaje natural claro: *«En [0, 1]: f(x) queda en el exterior y g(x) en el interior.»*
+2. **Suite Interactiva de Deslizadores 3D en `main_window.py`**:
+   - **Deslizador de Ángulo de Revolución $\theta \in [5^\circ, 360^\circ]$**: Permite abrir y seccionar el sólido tridimensional interactivamente para inspeccionar el interior o el hueco axial.
+   - **Botón de Animación Paso a Paso (GeoGebra)**: Integra un temporizador `QTimer` a ~40 fps con controles `[▶ Girar poco a poco (GeoGebra)]`, `[⏸ Pausar]` y `[↺ 360°]` que incrementa el ángulo fluidamente, mostrando cómo la región 2D barre el espacio tridimensional paso a paso.
+   - **Deslizador de Rebanada Representativa ($dx/dy$)**: Permite ubicar un disco o arandela de muestra en cualquier punto axial del intervalo $[a, b]$, destacando el radio exterior e interior.
+   - **Deslizador de Discos de Riemann ($N \in [4, 40]$)**: Permite comparar visualmente la integral suave contra la aproximación cilíndrica discreta de Riemann.
+3. **Pruebas Unitarias**:
+   - Añadida `test_ui_3d_interactive_controls_presence_and_behavior` en `tests/test_ui.py`, validando presencia, activación reactiva tras graficar, interacción con los sliders y reproducción/pausa de la animación de giro.
+
+### Verificación
+- **302 pruebas pasando** (1 prueba omitida exclusiva de Linux), 0 fallos.
+
+
+---
+
+## Sesión 19 — Desvinculación y Activación Reactiva de Deslizadores 3D e Integración Three.js
+
+**Fecha:** 2026-10-23  
+**Entorno:** Windows · `C:\Users\merej\OneDrive\Desktop\Calculo` · Python 3.14.6 · PySide6 6.12.0 · SymPy 1.14.0 · Matplotlib 3.11.2 · NumPy 2.5.4 · pytest 9.1.1
+
+### Diagnóstico y Petición del Usuario
+1. **Deslizadores inoperantes**: Al arrastrar el deslizador de rebanada representativa ($dx$) o el deslizador de discos de Riemann ($N$), la vista 3D no se actualizaba en absoluto.
+2. **Causa raíz identificada**:
+   - En `main_window.py`, las funciones manejadoras `_on_slice_slider_changed` y `_on_riemann_slider_changed` contenían guardas estrictas `if self.slice_check.isChecked():` y `if self.riemann_check.isChecked():`.
+   - Al graficar un sólido, ambos sliders se inicializaban en estado deshabilitado (`setEnabled(False)`) al no estar marcadas las casillas.
+   - En el tema oscuro, los `QCheckBox` carecían de estilizado específico en `QCheckBox::indicator`, por lo que el usuario no percibía las casillas como elementos clicables sino como rótulos de texto estáticos.
+   - En el visor WebGL `threejs_bundle.html`, `fitCameraToObject` se invocaba de forma obligatoria en cada repintado, provocando saltos bruscos y pérdida de la rotación/zoom manual del usuario al interactuar con los deslizadores.
+   - Al abrir un sólido con un ángulo de revolución parcial ($\theta < 2\pi$), la triangulación en `buildSurface` unía el último vértice con el primero mediante `(j+1)%uc`, generando una pared artificial cerrada.
+
+### Soluciones Implementadas
+1. **Activación Reactiva en `main_window.py`**:
+   - `self.slice_slider.setEnabled(True)` y `self.riemann_slider.setEnabled(True)` habilitados inmediatamente cuando hay un sólido activo.
+   - Mover cualquiera de los deslizadores activa automáticamente la modalidad respectiva (`slice_check.setChecked(True)` o `riemann_check.setChecked(True)`) sin requerir clic manual previo.
+   - El botón `[↺ 360°]` restaura el sólido continuo a 360° y desactiva limpiamente las capas de rebanada y Riemann.
+   - Estilizado de `QCheckBox::indicator` en QSS con bordes y fondos de alto contraste (cyan / slate) acordes a la estética *glass/dark*.
+2. **Estabilización de Cámara y Triangulación en Three.js**:
+   - Modificado `threejs_bundle.html` para no cerrar la costura poligonal cuando $\theta_{\max} < 2\pi - 10^{-4}$.
+   - Añadido el parámetro `fit_camera: bool = True` en `encode_solid_mesh` y `ThreeJSViewer.plot_solid_mesh` (`integrallab/viz/threejs_wrapper.py`), pasando `fit_camera=False` durante las manipulaciones de deslizadores para preservar la posición de la cámara del usuario en tiempo real.
+3. **Pruebas y Verificación**:
+   - Ampliada la prueba `test_ui_3d_interactive_controls_presence_and_behavior` en `tests/test_ui.py` validando la activación directa por arrastre de ambos deslizadores y la restauración integral con el botón de reset.
+   - Suite completa ejecutada: **302 pruebas pasando (1 omitida: Linux), 0 fallos**.
