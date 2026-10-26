@@ -139,7 +139,7 @@ Ejecuta estos comandos para verificar las correcciones:
 
 ### **Test 1: Validar sintaxis del parser**
 ```bash
-cd C:/Users/merej/OneDrive/Desktop/Calculo
+cd <carpeta del repositorio>
 python scripts/test_parser.py
 ```
 

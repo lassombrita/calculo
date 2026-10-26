@@ -1,34 +1,10 @@
-"""Punto de entrada de IntegralLab.
-
-Permite ejecutar la aplicación directamente con:
-    python -m integrallab
-
-Responsabilidad:
-Inicializar el entorno Qt (QApplication), instanciar la ventana principal
-(MainWindow) y ceder el control al bucle de eventos de Qt.
-"""
-
-from __future__ import annotations
-
-import multiprocessing
-import sys
+from integrallab.ui.theme import apply_theme
+from integrallab.ui.views.main_window import MainWindow
 from pathlib import Path
-
+import sys
 
 def main() -> int:
-    """Arranca IntegralLab y devuelve el código de salida de Qt.
-
-    Las importaciones de Qt van dentro de la función: el proceso de cálculo (contexto
-    ``spawn``) vuelve a importar este módulo y no debe cargar Qt ni QtWebEngine.
-
-    Returns:
-        Código de salida del proceso (0 = éxito, != 0 = error).
-    """
-    from PySide6.QtWidgets import QApplication
-
-    from integrallab.ui.main_window import MainWindow
-    from integrallab.ui.theme import apply_theme
-
+    """Entrada del proceso de cálculo (subproceso, por defecto)."""
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
@@ -40,7 +16,15 @@ def main() -> int:
     return app.exec()
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Punto de entrada del comando ``integrallab`` (``[project.scripts]`` de ``pyproject.toml``).
+
+    ``pyproject.toml`` apunta a ``integrallab.__main__:run``; antes esa función no existía y el
+    comando instalado fallaba con ``AttributeError`` (``python -m integrallab`` sí funcionaba).
+    """
     multiprocessing.freeze_support()  # necesario en ejecutables congelados (PyInstaller) de Windows
     sys.exit(main())
 
+
+if __name__ == "__main__":
+    run()

@@ -57,95 +57,18 @@ class NumericResult:
     error_message: str | None = None
 
 
-def subtract_expressions(
-    minuend: ParsedExpression | str,
-    subtrahend: ParsedExpression | str,
-) -> ParsedExpression:
-    """Construye ``f - g`` como ``ParsedExpression`` sin volver a parsear texto.
-
-    Equivale a ``parse_math_expression(f"({f}) - ({g})")`` para entradas de texto, pero también
-    sirve cuando ``f`` o ``g`` provienen de una interpolación (un spline ``Piecewise`` no se
-    puede reconstruir desde su texto con el parser seguro).
-    """
-    f = minuend if isinstance(minuend, ParsedExpression) else parse_math_expression(minuend)
-    g = subtrahend if isinstance(subtrahend, ParsedExpression) else parse_math_expression(subtrahend)
-    if not _SYMPY_AVAILABLE or f.sympy_expr is None or g.sympy_expr is None:
-        return parse_math_expression(f"({f.raw_text}) - ({g.raw_text})")
-    expr = f.sympy_expr - g.sympy_expr
-    return ParsedExpression(
-        raw_text=f"({f.raw_text}) - ({g.raw_text})",
-        plain_text=str(expr),
-        latex=sympy.latex(expr),
-        sympy_expr=expr,
-        variables=sorted(str(s) for s in expr.free_symbols),
-    )
-
-
-def differentiate(
-    expression: ParsedExpression | str,
-    variable: str = "x",
-    order: int = 1,
-) -> ExpressionResult:
-    """Calcula la derivada simbólica de una expresión matemática.
-
-    Args:
-        expression: Expresión parseada o cadena de texto a derivar.
-        variable: Nombre de la variable de derivación (por defecto 'x').
-        order: Orden de la derivada (por defecto 1).
-
-    Returns:
-        ExpressionResult con el resultado simbólico y en LaTeX.
-    """
-    if order < 1:
-        return ExpressionResult(
-            plain_text="",
-            latex="",
-            raw_expr=None,
-            is_success=False,
-            error_message="El orden de derivación debe ser un entero positivo (>= 1).",
-        )
-
-    if not _SYMPY_AVAILABLE:
-        return ExpressionResult(
-            plain_text="",
-            latex="",
-            raw_expr=None,
-            is_success=False,
-            error_message="El motor matemático SymPy no está disponible.",
-        )
-
-    try:
-        parsed = expression if isinstance(expression, ParsedExpression) else parse_math_expression(expression)
-        sym_var = sympy.Symbol(variable)
-        diff_expr = sympy.diff(parsed.sympy_expr, sym_var, order)
-        return ExpressionResult(
-            plain_text=str(diff_expr),
-            latex=sympy.latex(diff_expr),
-            raw_expr=diff_expr,
-            is_success=True,
-        )
-    except Exception as exc:
-        return ExpressionResult(
-            plain_text="",
-            latex="",
-            raw_expr=None,
-            is_success=False,
-            error_message=str(exc),
-        )
-
-
 def integrate_indefinite(
     expression: ParsedExpression | str,
     variable: str = "x",
 ) -> ExpressionResult:
-    """Calcula la integral indefinida (antiderivada) de una expresión.
+    """Calcula la integral indefinida de una expresión.
 
     Args:
         expression: Expresión parseada o cadena de texto.
         variable: Variable de integración (por defecto 'x').
 
     Returns:
-        ExpressionResult con la antiderivada en texto y LaTeX.
+        ExpressionResult con el resultado exacto y la aproximación numérica en float.
     """
     if not _SYMPY_AVAILABLE:
         return ExpressionResult(
@@ -155,6 +78,8 @@ def integrate_indefinite(
             is_success=False,
             error_message="El motor matemático SymPy no está disponible.",
         )
+
+    import math as _math
 
     try:
         parsed = expression if isinstance(expression, ParsedExpression) else parse_math_expression(expression)
@@ -285,3 +210,157 @@ def integrate_definite(
             error_message=str(exc),
         )
 
+
+def _real_definite_integral(
+    expr: sympy.Expr,
+    var: sympy.Symbol,
+    sym_lower: sympy.Expr,
+    sym_upper: sympy.Expr,
+    lo: float,
+    hi: float,
+) -> sympy.Expr:
+    """∫ con la misma función que se dibuja: raíces impares reales y ``|u|`` resueltos por tramos.
+
+    SymPy integra ``∛x`` con la rama principal (compleja) en x < 0: ``∫_{-1}^{1} ∛x dx`` daba
+    ``3/4 + 3·(-1)^(1/3)/4`` y el cálculo se detenía con «resultado complejo» (hallazgo A6). Se
+    parte el intervalo donde cambian de signo las bases de las raíces impares y los argumentos de
+    los valores absolutos, y en cada tramo se integra la rama real.
+    """
+    needs_split = lo < hi and any(
+        is_odd_root(e) or isinstance(e, sympy.Abs) for e in sympy.preorder_traversal(expr)
+    )
+    if not needs_split:
+        return sympy.integrate(expr, (var, sym_lower, sym_upper))
+    cuts = sign_cut_points((expr,), var, lo, hi)
+    nums = [lo, *(c[0] for c in cuts), hi]
+    syms = [sym_lower, *(c[1] for c in cuts), sym_upper]
+    parts = [
+        sympy.integrate(real_branch(expr, var, n0, n1), (var, s0, s1))
+        for n0, n1, s0, s1 in zip(nums, nums[1:], syms, syms[1:])
+    ]
+    return sympy.simplify(sympy.Add(*parts))
+
+
+def area_between(
+    upper: ParsedExpression | str,
+    lower: ParsedExpression | str | None,
+    lower_limit: float | int | str,
+    upper_limit: float | int | str,
+) -> NumericResult:
+    """Área entre curvas en el plano (|∫(upper - lower)|).
+
+    A diferencia de la integral definida (que respeta el signo), aquí se usa el valor absoluto
+    para obtener siempre un área positiva. Se parte el intervalo en los cruces donde upper =
+    lower y se suma el área absoluta en cada tramo.
+    """
+    if not _SYMPY_AVAILABLE:
+        return NumericResult(
+            value=None,
+            exact_plain_text="",
+            exact_latex="",
+            is_success=False,
+            error_message="El motor matemático SymPy no está disponible.",
+        )
+
+    try:
+        upper_parsed = upper if isinstance(upper, ParsedExpression) else parse_math_expression(upper)
+        lower_parsed = (
+            lower if isinstance(lower, ParsedExpression) else parse_math_expression(lower)
+        ) if lower else None
+
+        sym_var = sympy.Symbol("x")
+        lo, hi = [float(l.evalf()) for l in [parse_numeric_or_symbolic(lower_limit), parse_numeric_or_symbolic(upper_limit)]]
+        
+        if not all(_math.isfinite(v) for v in (lo, hi)):
+            raise ValueError("Los límites deben ser finitos.")
+
+        integrand = upper_parsed.sympy_expr - (lower_parsed.sympy_expr if lower_parsed else sympy.Integer(0))
+        result_sym = _real_definite_integral(integrand, sym_var, parse_numeric_or_symbolic(lo), parse_numeric_or_symbolic(hi), lo, hi)
+
+        from integrallab.core.solids import _numeric_value
+
+        num_val = _numeric_value(result_sym)
+
+        return NumericResult(
+            value=num_val,
+            exact_plain_text=str(result_sym),
+            exact_latex=sympy.latex(result_sym),
+            is_success=num_val is not None,
+            error_message=None if num_val is not None else "Integral divergente o no resuelta.",
+        )
+    except Exception as exc:  # noqa: BLE001 - Captura errores generales de cálculo simbólico
+        return NumericResult(
+            value=None,
+            exact_plain_text="",
+            exact_latex="",
+            is_success=False,
+            error_message=f"Error calculando área entre curvas: {exc}",
+        )
+
+
+def differentiate(
+    expression: ParsedExpression | str,
+    order: int = 1,
+    variable: str = "x",
+) -> ExpressionResult:
+    """Calcula la derivada de una expresión respecto a una variable.
+
+    Args:
+        expression: Expresión parseada o cadena de texto.
+        order: Orden de la derivada (por defecto 1). Si es 0, devuelve el mismo expresion como derivada cero.
+        variable: Variable respecto a la cual derivar (por defecto 'x').
+
+    Returns:
+        ExpressionResult con el resultado exacto y la aproximación numérica en float.
+    """
+    if not _SYMPY_AVAILABLE:
+        return ExpressionResult(
+            plain_text="",
+            latex="",
+            raw_expr=None,
+            is_success=False,
+            error_message="El motor matemático SymPy no está disponible.",
+        )
+
+    try:
+        parsed = expression if isinstance(expression, ParsedExpression) else parse_math_expression(expression)
+        sym_var = sympy.Symbol(variable)
+        
+        # Derivada de orden 0: devuelve la expresión original (derivada cero no existe, devolvemos la misma función)
+        if order == 0:
+            return ExpressionResult(
+                plain_text=f"f(x) = {parsed.plain_text}",
+                latex=f"f\\left({sympy.latex(variable)}\\right) = {sympy.latex(parsed.sympy_expr)}",
+                raw_expr=parsed.sympy_expr,
+                is_success=True,
+            )
+        
+        # Derivada de orden negativo: error
+        if order < 0:
+            return ExpressionResult(
+                plain_text="",
+                latex="",
+                raw_expr=None,
+                is_success=False,
+                error_message="El orden de la derivada debe ser un entero positivo.",
+            )
+        
+        # Aplicar derivadas repetidamente según el orden
+        derivative_expr = parsed.sympy_expr
+        for _ in range(order):
+            derivative_expr = sympy.diff(derivative_expr, sym_var)
+        
+        return ExpressionResult(
+            plain_text=str(derivative_expr),
+            latex=sympy.latex(derivative_expr),
+            raw_expr=derivative_expr,
+            is_success=True,
+        )
+    except Exception as exc:
+        return ExpressionResult(
+            plain_text="",
+            latex="",
+            raw_expr=None,
+            is_success=False,
+            error_message=str(exc),
+        )

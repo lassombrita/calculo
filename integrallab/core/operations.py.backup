@@ -1,0 +1,101 @@
+            )
+
+        return NumericResult(
+            value=num_val,
+            exact_plain_text=str(result_sym),
+            exact_latex=sympy.latex(result_sym),
+            is_success=True,
+        )
+    except Exception as exc:
+        return NumericResult(
+            value=None,
+            exact_plain_text="",
+            exact_latex="",
+            is_success=False,
+            error_message=str(exc),
+        )
+
+
+def _real_definite_integral(
+    expr: sympy.Expr,
+    var: sympy.Symbol,
+    sym_lower: sympy.Expr,
+    sym_upper: sympy.Expr,
+    lo: float,
+    hi: float,
+) -> sympy.Expr:
+    """∫ con la misma función que se dibuja: raíces impares reales y ``|u|`` resueltos por tramos.
+
+    SymPy integra ``∛x`` con la rama principal (compleja) en x < 0: ``∫_{-1}^{1} ∛x dx`` daba
+    ``3/4 + 3·(-1)^(1/3)/4`` y el cálculo se detenía con «resultado complejo» (hallazgo A6). Se
+    parte el intervalo donde cambian de signo las bases de las raíces impares y los argumentos de
+    los valores absolutos, y en cada tramo se integra la rama real.
+    """
+    needs_split = lo < hi and any(
+        is_odd_root(e) or isinstance(e, sympy.Abs) for e in sympy.preorder_traversal(expr)
+    )
+    if not needs_split:
+        return sympy.integrate(expr, (var, sym_lower, sym_upper))
+    cuts = sign_cut_points((expr,), var, lo, hi)
+    nums = [lo, *(c[0] for c in cuts), hi]
+    syms = [sym_lower, *(c[1] for c in cuts), sym_upper]
+    parts = [
+        sympy.integrate(real_branch(expr, var, n0, n1), (var, s0, s1))
+        for n0, n1, s0, s1 in zip(nums, nums[1:], syms, syms[1:])
+    ]
+    return sympy.simplify(sympy.Add(*parts))
+
+
+def area_between(
+    upper: ParsedExpression | str,
+    lower: ParsedExpression | str | None,
+    lower_limit: float | int | str,
+    upper_limit: float | int | str,
+) -> NumericResult:
+    """Área entre curvas en el plano (|∫(upper - lower)|).
+
+    A diferencia de la integral definida (que respeta el signo), aquí se usa el valor absoluto
+    para obtener siempre un área positiva. Se parte el intervalo en los cruces donde upper =
+    lower y se suma el área absoluta en cada tramo.
+    """
+    if not _SYMPY_AVAILABLE:
+        return NumericResult(
+            value=None,
+            exact_plain_text="",
+            exact_latex="",
+            is_success=False,
+            error_message="El motor matemático SymPy no está disponible.",
+        )
+
+    try:
+        upper_parsed = upper if isinstance(upper, ParsedExpression) else parse_math_expression(upper)
+        lower_parsed = (
+            lower if isinstance(lower, ParsedExpression) else parse_math_expression(lower)
+        ) if lower else None
+
+        sym_var = sympy.Symbol("x")
+        lo, hi = [float(l.evalf()) for l in [parse_numeric_or_symbolic(lower_limit), parse_numeric_or_symbolic(upper_limit)]]
+        
+        if not all(_math.isfinite(v) for v in (lo, hi)):
+            raise ValueError("Los límites deben ser finitos.")
+
+        integrand = upper_parsed.sympy_expr - (lower_parsed.sympy_expr if lower_parsed else sympy.Integer(0))
+        result_sym = _real_definite_integral(integrand, sym_var, parse_numeric_or_symbolic(lo), parse_numeric_or_symbolic(hi), lo, hi)
+
+        num_val = _numeric_value(result_sym)
+
+        return NumericResult(
+            value=num_val,
+            exact_plain_text=str(result_sym),
+            exact_latex=sympy.latex(result_sym),
+            is_success=num_val is not None,
+            error_message=None if num_val is not None else "Integral divergente o no resuelta.",
+        )
+    except Exception as exc:  # noqa: BLE001 - Captura errores generales de cálculo simbólico
+        return NumericResult(
+            value=None,
+            exact_plain_text="",
+            exact_latex="",
+            is_success=False,
+            error_message=f"Error calculando área entre curvas: {exc}",
+        )

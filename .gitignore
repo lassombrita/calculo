@@ -1,31 +1,52 @@
-# Python
+# ==========================================
+# PYTHON - Archivos compilados y de caché
+# ==========================================
 __pycache__/
 *.py[cod]
 *.egg-info/
 build/
 dist/
 
-# Entornos virtuales
+# ==========================================
+# ENTORNOS VIRTUALES - Dependencias locales
+# ==========================================
 .venv/
 venv/
 env/
 
-# Tests y cobertura
+# ==========================================
+# PRUEBAS Y COBERTURA - Reportes y caché de tests
+# ==========================================
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Herramientas de tipado y lint
+# ==========================================
+# HERRAMIENTAS DE ANÁLISIS - Tipado y Linter
+# ==========================================
 .mypy_cache/
 .ruff_cache/
 
-# Exportaciones generadas por la app
+# ==========================================
+# EXPORTACIONES - Archivos generados por la app
+# ==========================================
 *.pdf
 
-# Sistema operativo
+# ==========================================
+# SISTEMA OPERATIVO - Archivos basura del SO
+# ==========================================
 .DS_Store
 Thumbs.db
 Desktop.ini
 
-# IDE y configuración de entorno (no deben estar en repo)
+# ==========================================
+# CONFIGURACIÓN DE IDE - Entornos de desarrollo
+# ==========================================
 .vscode/settings.json
+# Paquetes de documentación generados por scripts/empaquetar_documentacion.py
+IntegralLab-documentacion-*.zip
+
+# ==========================================
+# ARCHIVOS BINARIOS Y EJECUTABLES
+# ==========================================
+dsh-latest-windows-x64.exe

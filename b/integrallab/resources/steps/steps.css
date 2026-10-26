@@ -1,0 +1,106 @@
+/* Desglose paso a paso (pestaña «Desarrollo», vista interactiva). Mismos colores que la vista
+   imprimible para que el cambio entre vistas no sorprenda. */
+:root {
+    --paper: #ffffff;
+    --ink: #0f172a;
+    --muted: #475569;
+    --line: #e2e8f0;
+    --card: #ffffff;
+    --card-nested: #f8fafc;
+    --accent: #2563eb;
+    --accent-soft: rgba(37, 99, 235, 0.12);
+    --accent-strong: #1d4ed8;
+    --flash: rgba(250, 204, 21, 0.45);
+    --head: #1e3a8a;
+    --head-ink: #ffffff;
+    --head-muted: #dbeafe;
+    --ok: #047857;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 13px/1.5 "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+}
+
+body { padding: 12px 14px 24px; }
+
+#summary {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--head);
+    color: var(--head-ink);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+}
+#summary[hidden] { display: none; }
+#summary h1 { font-size: 16px; margin: 0; }
+#summary p { margin: 2px 0 0; color: var(--head-muted); font-size: 12px; }
+.summary-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.summary-actions button, .how {
+    font: inherit;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 5px 10px;
+    cursor: pointer;
+}
+.summary-actions button { background: rgba(255, 255, 255, 0.14); color: var(--head-ink); }
+.summary-actions button:hover { background: rgba(255, 255, 255, 0.24); }
+
+#hint { color: var(--muted); margin: 0 0 10px; font-size: 12px; }
+#empty { color: var(--muted); text-align: center; margin-top: 40px; }
+
+.step {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin: 0 0 10px;
+    transition: box-shadow 0.25s ease, background-color 0.6s ease;
+}
+.step .step { background: var(--card-nested); margin: 8px 0 0; }
+.step.flash { background-color: var(--flash); }
+
+.step-title { margin: 0; font-size: 13px; color: var(--accent-strong); font-weight: 700; }
+.step-expl { margin: 3px 0 0; color: var(--muted); font-size: 12px; white-space: pre-line; }
+
+.formula {
+    margin: 8px 0 0;
+    padding: 6px 8px;
+    border-left: 4px solid var(--accent);
+    background: var(--card-nested);
+    border-radius: 0 6px 6px 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+.step .step .formula { background: var(--card); }
+.formula mjx-container { margin: 4px 0 !important; }
+.formula .raw { font-family: Consolas, "DejaVu Sans Mono", monospace; white-space: pre-wrap; }
+
+/* Partes clicables de una fórmula (\class{step-ID}{…} en el LaTeX). */
+.formula .step-anchor { cursor: pointer; color: var(--accent); }
+.formula .step-anchor:hover, .formula .step-anchor:focus { color: var(--accent-strong); outline: none; }
+.formula .step-anchor:hover > *, .formula .step-anchor:focus > * { filter: drop-shadow(0 0 1.5px var(--accent-soft)); }
+.formula .step-anchor.open { color: #b45309; }
+
+.how {
+    margin-top: 6px;
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+    font-size: 12px;
+}
+.how:hover { border-color: var(--accent); }
+.how[aria-expanded="true"] { background: transparent; border-color: var(--line); color: var(--muted); }
+
+.children { margin-left: 6px; padding-left: 8px; border-left: 2px dashed var(--line); }
+.children[hidden], .step[hidden] { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+    .step { transition: none; }
+}

@@ -1,13 +1,17 @@
 # IntegralLab
 
-Aplicación de escritorio para **cálculo integral simbólico** y **sólidos de revolución**, con una interfaz oscura estilo *glass* y desarrollo paso a paso pensado para estudiar.
+Aplicación de escritorio para **cálculo integral simbólico** y **sólidos de revolución**, con una interfaz oscura estilo *glass* y un desarrollo paso a paso pensado para estudiar: cada parte de una fórmula se puede tocar para ver cómo se obtuvo.
 
 ## Qué hace
 
-- Introduces `f(x)` (y opcionalmente `g(x)`) o un **conjunto de puntos discretos** `(x, y)` para interpolación numérica.
-- Puedes escribir las fórmulas en texto o activar el **editor visual** (botón «√x Editor visual»): la fracción dibuja su raya, la raíz su signo y la potencia su exponente, como en GeoGebra o en una calculadora Casio.
-- Soporta **Interpolación de Lagrange, Newton (diferencias divididas) y Splines Cúbicos naturales**.
-- Calcula la integral definida de forma simbólica (resultado exacto y aproximado).
+- Introduces `f(x)` (y opcionalmente `g(x)`) o un **conjunto de puntos** `(x, y)` para interpolar (Lagrange con 4 puntos o menos; spline cúbico natural con 5 o más).
+- Escribes en texto (`x^2 + 1`, `sen(x)`, `0,5x`, `ln|x|`, `sinx`, `x(x+1)`…) o con el **editor visual** (botón «√x Editor visual»), donde la fracción dibuja su raya y la raíz su signo, como en GeoGebra o en una calculadora Casio.
++ Calcula la **integral definida** `∫(f − g)` y, por separado, el **área entre las curvas** `∫|f − g|` (partida en los cruces): `sin(x)` en [0, 2π] tiene integral 0 y área 4.
+- Dibuja la región 2D sombreada y genera el **sólido de revolución** en 3D alrededor del eje X, el eje Y o un eje desplazado (`y = k`, `x = h`), con deslizadores de ángulo, rebanada representativa y cilindros de Riemann.
+- Calcula el volumen con **Discos**, **Arandelas** o **Casquillos cilíndricos**. Si el método elegido necesita integrar en `y`, describe la región por **franjas horizontales** con sus bordes reales.
+- Muestra el **desarrollo paso a paso** en dos vistas:
+  - **Desglose interactivo** (por defecto): al tocar una parte resaltada de una fórmula se despliega, debajo, su desarrollo: de dónde sale un radio, el binomio al cuadrado, la regla de integración de cada término (potencia, sustitución, partes, identidades), la comprobación derivando la primitiva (regla de la cadena y del producto) y la evaluación con el Teorema Fundamental del Cálculo.
+  - **Vista imprimible**: los 7 pasos clásicos, que se exportan a **PDF**.
 - Dibuja la región 2D sombreada entre las curvas.
 - Genera el **sólido de revolución** en 3D alrededor del eje X, el eje Y o un eje desplazado (`y = k`, `x = h`).
 - Calcula el volumen con **Discos**, **Arandelas** o **Casquillos cilíndricos**, con **despeje analítico automático a dy** cuando el método lo requiere.
@@ -15,14 +19,18 @@ Aplicación de escritorio para **cálculo integral simbólico** y **sólidos de 
 
 ### Qué método admite cada eje
 
-El sistema determina la compatibilidad geométrica de cortes y soporta **despeje analítico automático a dy** mediante SymPy:
+![Desglose interactivo](docs/img/desglose-interactivo.png)
+
+### Qué método admite cada eje
 
 | Eje de giro | Discos / Arandelas | Casquillos |
 |---|---|---|
-| Horizontal (`y = 0` o `y = k`) | ✅ Directo (dx) | ✅ Con inversión analítica (dy) |
-| Vertical (`x = 0` o `x = h`) | ✅ Con inversión analítica (dy) | ✅ Directo (dx) |
+| Horizontal (`y = 0` o `y = k`) | Directo (cortes en dx) | Por franjas horizontales (dy) |
+| Vertical (`x = 0` o `x = h`) | Por franjas horizontales (dy) | Directo (cortes en dx) |
 
-Si una función no es invertible analíticamente, el selector lo indicará en el tooltip.
+Para integrar en `dy`, cada borde curvo de una franja se despeja con SymPy. Si una curva no tiene una rama real despejable, el método aparece deshabilitado en el selector (para polinomios de grado ≤ 4 se comprueba al elegir el eje) o el cálculo lo explica y sugiere el método directo. Todo volumen se contrasta con una cuadratura numérica independiente: un desarrollo que no coincide no se muestra como resultado.
+
+Si el eje atraviesa el interior de la región, el cálculo se rechaza con una explicación (los dos lados se solaparían al girar).
 
 ## Instalación y uso
 

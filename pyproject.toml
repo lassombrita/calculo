@@ -8,7 +8,7 @@ version = "2026.11.14.3"
 description = "Calculadora simbólica de integrales definidas, volumen de sólidos de revolución y área entre curvas con interfaz gráfica PySide6 (Glass/Dark), visualización 3D offline Three.js WebGL, interpolación numérica, exportación PDF, motor pedagógico universitario (detector de técnica [R(x)]², pasos explicados) + árbol de fórmulas MathJax."
 readme = "README.md"
 authors = [
-    {name = "", email = ""},
+    {name = "Johan Stiven Lasso Aguirre", email = "j.lasso@example.com"},  # Nombre del autor, email genérico para cumplir con el esquema de Python Packaging
 ]
 license = {text = "MIT"}
 requires-python = ">=3.10"
