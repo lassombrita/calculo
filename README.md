@@ -5,6 +5,7 @@ Aplicación de escritorio para **cálculo integral simbólico** y **sólidos de 
 ## Qué hace
 
 - Introduces `f(x)` (y opcionalmente `g(x)`) o un **conjunto de puntos discretos** `(x, y)` para interpolación numérica.
+- Puedes escribir las fórmulas en texto o activar el **editor visual** (botón «√x Editor visual»): la fracción dibuja su raya, la raíz su signo y la potencia su exponente, como en GeoGebra o en una calculadora Casio.
 - Soporta **Interpolación de Lagrange, Newton (diferencias divididas) y Splines Cúbicos naturales**.
 - Calcula la integral definida de forma simbólica (resultado exacto y aproximado).
 - Dibuja la región 2D sombreada entre las curvas.
@@ -46,22 +47,34 @@ pytest
 |---|---|
 | Interfaz de escritorio | PySide6 (Qt) |
 | Cálculo simbólico | SymPy |
-| Visualización 2D y 3D | Matplotlib (integrado en Qt) |
+| Visualización 2D y 3D | Matplotlib (integrado en Qt) y Three.js (WebGL, QtWebEngine) |
+| Editor visual de fórmulas | MathLive (MIT), sin conexión, en QtWebEngine |
 | Tests | pytest |
 
 ## Estructura
 
 ```
 integrallab/
-├── core/    Dominio matemático puro: parser, integrales, muestreo y sólidos de revolución
-├── ui/      Interfaz PySide6: ventana principal, tema glass/dark y widgets
+├── core/       Dominio matemático puro: parser, editor visual (LaTeX → texto), integrales, muestreo y sólidos
+├── ui/         Interfaz PySide6: ventana principal, proceso de cálculo, tema glass/dark y widgets
 │   └── widgets/
-└── viz/     Lienzos Matplotlib 2D/3D, estilo y renderizado de LaTeX
-tests/       Pruebas con pytest
-docs/        Estado del proyecto, decisiones técnicas y registro de sesiones
+├── viz/        Lienzos Matplotlib 2D/3D, visor Three.js y renderizado de LaTeX
+└── resources/  Three.js, MathLive y las páginas locales del visor 3D y del editor visual
+tests/          Pruebas con pytest
+docs/           Arquitectura, estado, auditoría, decisiones, privacidad y registro de sesiones
 ```
 
-La regla de arquitectura es que la UI nunca habla con SymPy directamente: todo pasa por `integrallab.core`. Detalles en `AGENTS.md` y `docs/TECHNICAL_DECISIONS.md`.
+La regla de arquitectura es que la UI nunca habla con SymPy directamente: todo pasa por `integrallab.core`. Detalles en `AGENTS.md` y `docs/ARQUITECTURA.md`.
+
+## Documentación
+
+El índice y el orden de lectura están en [`docs/README.md`](docs/README.md). Los más usados:
+
+- [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md): cómo encajan los módulos.
+- [`docs/EDITOR_VISUAL.md`](docs/EDITOR_VISUAL.md): uso y diseño del editor visual de fórmulas.
+- [`docs/AUDITORIA_2026-10-24.md`](docs/AUDITORIA_2026-10-24.md): bugs conocidos y plan de corrección.
+- [`docs/PRIVACIDAD.md`](docs/PRIVACIDAD.md): qué datos no entran al repositorio.
+- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md): componentes de terceros y sus licencias.
 
 ## Estado del proyecto
 
@@ -69,6 +82,8 @@ Ver `docs/PROJECT_STATUS.md` para el detalle por fases.
 
 - ✅ Fases 1–11.2: núcleo matemático, visualización 2D/3D, desarrollo paso a paso, exportación a PDF y rediseño *glass/dark*.
 - ✅ Fase 12: interpolación numérica (Lagrange, Newton, splines cúbicos), entrada de puntos discretos, visor 3D Three.js acelerado por WebGL y blindaje de seguridad matemática (174 pruebas pasando al 100%).
+- ✅ Editor visual de fórmulas (estilo GeoGebra / calculadora Casio) y documentación completa con comprobación automática de privacidad (413 pruebas pasando; 1 se omite si no se define `INTEGRALLAB_PRIVATE_TERMS`).
+- ⏳ Pendiente: corregir los hallazgos de la auditoría del 2026-10-24 (`docs/AUDITORIA_2026-10-24.md`).
 - ⏳ Pendiente: conectar el panel de IA (`ChatPanel`), que hoy no tiene backend.
 
 ## Derechos de autor

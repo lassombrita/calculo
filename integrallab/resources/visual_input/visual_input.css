@@ -1,0 +1,95 @@
+/* Editor visual de fórmulas de IntegralLab: mismos tokens que ui/theme.py (Palette). */
+:root {
+    --void: #05070D;
+    --ink: #0A0F1C;
+    --panel: #101830;
+    --edge: #26325A;
+    --text: #E8ECF8;
+    --muted: #8B95B5;
+    --faint: #566089;
+    --cyan: #5CE1FF;
+    --violet: #9D8CFF;
+    --rose: #FF6B8A;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+    background: transparent;
+    color: var(--text);
+    font-family: "Geist", "Segoe UI Variable", "Inter", "Segoe UI", sans-serif;
+    font-size: 12px;
+    overflow: hidden;
+    user-select: none;
+}
+
+#editor { padding: 0 0 2px 0; display: flex; flex-direction: column; gap: 5px; }
+
+/* ── Barra de plantillas (estilo GeoGebra / calculadora) ─────────────────── */
+.toolbar {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 5px; border-radius: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+}
+.tool-row { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
+.tool {
+    height: 28px; min-width: 0;
+    border-radius: 7px; border: 1px solid var(--edge);
+    background: rgba(5, 7, 13, 0.55); color: var(--text);
+    font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif;
+    font-size: 14px; line-height: 1; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    white-space: nowrap; overflow: hidden;
+}
+.tool sup { font-size: 9px; position: relative; top: -5px; vertical-align: baseline; }
+.tool sub { font-size: 9px; position: relative; top: 3px; vertical-align: baseline; }
+.tool.fn { font-family: "Segoe UI", sans-serif; font-size: 12px; font-style: normal; }
+.tool.var { font-style: italic; font-size: 15px; }
+.tool.nav { color: var(--muted); font-size: 11px; }
+.tool:hover { border-color: #3A4673; background: rgba(92, 225, 255, 0.10); }
+.tool:active { background: rgba(92, 225, 255, 0.24); }
+.tool:focus-visible { outline: 1px solid var(--cyan); }
+
+.frac { display: inline-flex; flex-direction: column; align-items: center; font-size: 11.5px; line-height: 1.0; }
+.frac > span:first-child { border-bottom: 1px solid currentColor; padding: 0 2px; }
+
+/* ── Casillas ────────────────────────────────────────────────────────────── */
+.field-row { display: flex; align-items: flex-start; gap: 6px; }
+.field-row label {
+    flex: 0 0 44px; padding-top: 9px;
+    color: var(--text); font-size: 12px; white-space: nowrap;
+}
+.field-row.limits label { flex: 0 0 26px; }
+.field-row.limits label.second { margin-left: 4px; }
+.field-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+
+math-field {
+    display: block; width: 100%;
+    min-height: 34px; padding: 3px 8px;
+    font-size: 17px;
+    color: var(--text);
+    background: rgba(5, 7, 13, 0.55);
+    border: 1px solid var(--edge); border-radius: 10px;
+    --caret-color: var(--cyan);
+    --selection-background-color: rgba(92, 225, 255, 0.28);
+    --selection-color: var(--text);
+    --contains-highlight-background-color: rgba(92, 225, 255, 0.08);
+    --placeholder-color: var(--violet);
+    --placeholder-opacity: 0.9;
+    --smart-fence-color: var(--muted);
+    --primary-color: var(--cyan);
+    outline: none;
+}
+math-field.small { font-size: 15px; }
+math-field:hover { border-color: #3A4673; }
+math-field:focus-within { border-color: var(--cyan); }
+math-field.has-error { border-color: var(--rose); }
+math-field::part(menu-toggle),
+math-field::part(virtual-keyboard-toggle) { display: none; }
+math-field::part(content) { padding: 2px 0; }
+
+.status { min-height: 0; font-size: 11px; line-height: 1.3; color: var(--rose); }
+.status:empty { display: none; }
+
+.hint { color: var(--faint); font-size: 10.5px; padding: 0 2px; }

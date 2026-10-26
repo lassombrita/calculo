@@ -423,7 +423,7 @@ Carga el bundle empaquetado Three.js desde archivo local.
 ### Ejecutar Todas las Pruebas
 
 ```bash
-cd "C:/Users/merej/OneDrive/Desktop/Calculo"
+cd "<carpeta-del-repositorio>"
 
 python integrallab/viz/experimental/test_threejs_prototype.py
 ```

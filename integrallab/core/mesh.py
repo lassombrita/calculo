@@ -278,9 +278,7 @@ def _interpolate_radii(
     # Crear función de interpolación cúbica (suave en bordes redondeados)
     t_vals = np.linspace(0, 2 * math.pi, len(radii), endpoint=False) + math.pi / len(radii)
     
-    from scipy.interpolate import interp1d if 'scipy' in globals() else None
-    
-    # Interpolación lineal simple (más rápida y estable)
+    # Interpolación lineal simple (más rápida y estable, sin dependencia de SciPy)
     interpolator = np.interp(
         target_theta, t_vals, radii, 
         left=np.nanmin(radii), right=np.nanmax(radii) if len(np.unique(radii)) > 1 else np.nanmax(radii)

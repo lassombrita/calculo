@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IntegralLab - Editor visual de fórmulas</title>
+    <link rel="stylesheet" href="visual_input.css">
+    <!-- MathLive (MIT) empaquetado sin conexión: resources/mathlive/LICENSE_MATHLIVE.txt -->
+    <script src="../mathlive/mathlive.min.js"></script>
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+</head>
+<body>
+<div id="editor">
+    <div class="toolbar" role="toolbar" aria-label="Plantillas de fórmulas">
+        <div class="tool-row">
+            <button class="tool" data-insert="\frac{#@}{#?}" title="Fracción (tecla /)" aria-label="Fracción">
+                <span class="frac"><span>□</span><span>□</span></span></button>
+            <button class="tool" data-insert="\sqrt{#@}" title="Raíz cuadrada" aria-label="Raíz cuadrada">√□</button>
+            <button class="tool" data-insert="\sqrt[#?]{#@}" title="Raíz n-ésima" aria-label="Raíz n-ésima"><sup>n</sup>√□</button>
+            <button class="tool" data-insert="#@^{2}" title="Al cuadrado" aria-label="Al cuadrado">□<sup>2</sup></button>
+            <button class="tool" data-insert="#@^{#?}" title="Potencia (tecla ^)" aria-label="Potencia">□<sup>□</sup></button>
+            <button class="tool" data-insert="#@^{-1}" title="Inversa: sin⁻¹ es arcoseno; x⁻¹ es 1/x" aria-label="Inversa">□<sup>−1</sup></button>
+            <button class="tool" data-insert="\left|#@\right|" title="Valor absoluto" aria-label="Valor absoluto">|□|</button>
+            <button class="tool" data-insert="\left(#@\right)" title="Paréntesis" aria-label="Paréntesis">(□)</button>
+            <button class="tool" data-insert="\pi" title="Número pi" aria-label="Pi">π</button>
+            <button class="tool" data-insert="e^{#?}" title="Exponencial" aria-label="Exponencial">e<sup>□</sup></button>
+        </div>
+        <div class="tool-row">
+            <button class="tool fn" data-insert="\sin\left(#@\right)" title="Seno" aria-label="Seno">sin</button>
+            <button class="tool fn" data-insert="\cos\left(#@\right)" title="Coseno" aria-label="Coseno">cos</button>
+            <button class="tool fn" data-insert="\tan\left(#@\right)" title="Tangente" aria-label="Tangente">tan</button>
+            <button class="tool fn" data-insert="\ln\left(#@\right)" title="Logaritmo natural" aria-label="Logaritmo natural">ln</button>
+            <button class="tool fn" data-insert="\log\left(#@\right)" title="Logaritmo en base 10 (como en la calculadora)" aria-label="Logaritmo en base 10">log</button>
+            <button class="tool fn" data-insert="\log_{#?}\left(#@\right)" title="Logaritmo con base" aria-label="Logaritmo con base">log<sub>□</sub></button>
+            <button class="tool" data-insert="^{\circ}" title="Grados (30° = π/6)" aria-label="Grados">°</button>
+            <button class="tool var" data-insert="x" title="Variable x" aria-label="Variable x">x</button>
+            <button class="tool nav" data-command="moveToPreviousChar" title="Mover a la izquierda" aria-label="Izquierda">◀</button>
+            <button class="tool nav" data-command="moveToNextChar" title="Mover a la derecha (salir del denominador o del exponente)" aria-label="Derecha">▶</button>
+        </div>
+    </div>
+
+    <div class="field-row">
+        <label for="mf-f">f(x) =</label>
+        <div class="field-col">
+            <math-field id="mf-f" data-field="f" placeholder="\text{escribe o usa los botones}"></math-field>
+            <div class="status" id="status-f" aria-live="polite"></div>
+        </div>
+    </div>
+    <div class="field-row">
+        <label for="mf-g">g(x) =</label>
+        <div class="field-col">
+            <math-field id="mf-g" data-field="g" placeholder="\text{opcional}"></math-field>
+            <div class="status" id="status-g" aria-live="polite"></div>
+        </div>
+    </div>
+    <div class="field-row limits">
+        <label for="mf-a">a =</label>
+        <div class="field-col">
+            <math-field id="mf-a" data-field="a" class="small"></math-field>
+            <div class="status" id="status-a" aria-live="polite"></div>
+        </div>
+        <label for="mf-b" class="second">b =</label>
+        <div class="field-col">
+            <math-field id="mf-b" data-field="b" class="small"></math-field>
+            <div class="status" id="status-b" aria-live="polite"></div>
+        </div>
+    </div>
+    <div class="hint">Enter calcula · Tab o ▶ pasan al siguiente recuadro</div>
+</div>
+<script src="visual_input.js"></script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 # 🧪 Pruebas de Validación - ThreeJS Prototype
 
 **Fecha:** 2026-10-19  
-**Proyecto:** https://github.com/lassombrita/calculo  
+**Proyecto:** IntegralLab (repositorio del proyecto)  
 **Estado:** ✅ Implementado, lista para ejecución manual
 
 ---
@@ -36,7 +36,7 @@
 ### 1. Instalar Dependencias
 
 ```bash
-cd "C:/Users/merej/OneDrive/Desktop/Calculo"
+cd "<carpeta-del-repositorio>"
 
 # Instalar PySide6 y PySide6-Addons (incluye QWebEngineWidgets)
 pip install "PySide6>=6.6" "PySide6-Addons>=6.6"

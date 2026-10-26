@@ -26,7 +26,7 @@ import threading
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QStatusBar,
@@ -56,7 +57,6 @@ from integrallab.core.interpolation import (
     interpolate_lagrange,
 )
 from integrallab.core.parser import (
-    MAX_EXPRESSION_LENGTH,
     ExpressionParseError,
     ParsedExpression,
     is_points_input,
@@ -71,26 +71,32 @@ from integrallab.core.pipeline import (
     run_calculation,
 )
 from integrallab.core.sampling import robust_y_window, sample_expression
-from integrallab.core.domain.geometry import Axis
-from integrallab.core.solids import RevolutionAxis
-from integrallab.core.volume.calculation import (
-    VolumeResult,
-    calculate_disk_volume,
-    calculate_washer_volume,
-    calculate_shell_volume,
-    calculate_volume_from_region,
-)
 from integrallab.core.solids import (
     AxisOrientation,
+    _evaluate_bounds,
+    generate_representative_slice,
+    generate_riemann_mesh,
+    generate_solid_mesh,
     MethodRecommendation,
     Region2D,
+    RevolutionAxis,
     SolidMesh3D,
     SolidMethod,
+    VolumeResult,
+    can_invert_for_method,
+    inversion_is_cheap,
+    is_method_compatible,
 )
 from integrallab.ui.calc_backend import ProcessCalculationBackend
 from integrallab.ui.theme import Palette, build_palette, build_stylesheet
 from integrallab.ui.widgets.aurora import AuroraBackground
 from integrallab.ui.widgets.glass import GlassCard
+from integrallab.ui.widgets.visual_input import (
+    FIELD_LABELS,
+    FIELD_NAMES,
+    VisualMathEditor,
+    visual_input_support,
+)
 from integrallab.viz.canvas import PlotCanvas
 from integrallab.viz.canvas3d import PlotCanvas3D
 from integrallab.viz.threejs_wrapper import ThreeJSViewer, WEBENGINE_AVAILABLE  # noqa: F401
@@ -115,6 +121,9 @@ _DEFAULT_POINTS: int = 400
 
 _PLOT_BUTTON_TEXT = "⚙  Generar Gráficas y Sólido"
 _BUSY_BUTTON_TEXT = "⏳ Calculando…  (Esc cancela)"
+_VISUAL_OFF_TEXT = "√x  Editor visual"
+_VISUAL_ON_TEXT = "⌨  Volver a texto"
+_VISUAL_SETTING = "input/visual_editor"
 
 
 def _fmt(value: float, digits: int = 4) -> str:
@@ -274,6 +283,12 @@ class MainWindow(QMainWindow):
         self._show_dialogs: bool = True
         self._invert_cache: dict[tuple, bool] = {}
         self._prerendered: dict[FormulaSpec, str] = {}
+        # Editor visual de fórmulas (se crea al activarlo por primera vez) y preferencia guardada.
+        self._visual_editor: VisualMathEditor | None = None
+        self._syncing_visual = False
+        self._settings = QSettings(
+            QSettings.Format.IniFormat, QSettings.Scope.UserScope, "IntegralLab", "IntegralLab"
+        )
         # Tema ANTES de crear widgets: la barra de Matplotlib tiñe sus iconos con la paleta.
         self.setPalette(build_palette())
         self.setStyleSheet(build_stylesheet())
@@ -290,7 +305,6 @@ class MainWindow(QMainWindow):
 
         # ── Panel lateral de configuración y resultados (izquierda) ────────
         sidebar_widget = QWidget()
-        sidebar_widget.setFixedWidth(360)
         sidebar_layout = QVBoxLayout(sidebar_widget)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(10)
@@ -299,6 +313,36 @@ class MainWindow(QMainWindow):
         region_group = QGroupBox("1. Definición de la Región 2D")
         region_layout = QVBoxLayout(region_group)
         region_layout.setSpacing(6)
+        self._region_layout = region_layout
+
+        # Alternar entre escribir en texto y el editor visual (fracciones, raíces y potencias
+        # dibujadas, como en GeoGebra o en una calculadora con «Natural Display»).
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 0, 0, 0)
+        mode_row.addStretch(1)
+        self.visual_input_button = QPushButton(_VISUAL_OFF_TEXT)
+        self.visual_input_button.setObjectName("ModeToggle")
+        self.visual_input_button.setCheckable(True)
+        self.visual_input_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        visual_ok, visual_reason = visual_input_support()
+        if visual_ok:
+            self.visual_input_button.setToolTip(
+                "Escribe las fórmulas como en GeoGebra o en una calculadora: la fracción dibuja su "
+                "raya, la raíz su signo y la potencia su exponente. Vuelve a pulsar para escribir en texto."
+            )
+        else:
+            self.visual_input_button.setEnabled(False)
+            self.visual_input_button.setToolTip(f"Editor visual no disponible: {visual_reason}")
+        self.visual_input_button.toggled.connect(self._on_visual_input_toggled)
+        mode_row.addWidget(self.visual_input_button)
+        region_layout.addLayout(mode_row)
+
+        # Casillas de texto (modo clásico). En modo visual se ocultan, pero siguen siendo el
+        # modelo: el editor visual escribe en ellas el texto ya traducido.
+        self._text_inputs = QWidget()
+        text_inputs_layout = QVBoxLayout(self._text_inputs)
+        text_inputs_layout.setContentsMargins(0, 0, 0, 0)
+        text_inputs_layout.setSpacing(6)
 
         # Función f(x)
         f_row = QHBoxLayout()
@@ -306,11 +350,10 @@ class MainWindow(QMainWindow):
         f_label.setFixedWidth(45)
         f_row.addWidget(f_label)
         self.expression_input = QLineEdit()
-        self.expression_input.setMaxLength(20_000)
         self.expression_input.setPlaceholderText("ej. sin(x), x**2, sqrt(x)...")
         self.expression_input.returnPressed.connect(self._on_plot_clicked)
         f_row.addWidget(self.expression_input)
-        region_layout.addLayout(f_row)
+        text_inputs_layout.addLayout(f_row)
 
         # Segunda función g(x) (opcional)
         g_row = QHBoxLayout()
@@ -318,11 +361,10 @@ class MainWindow(QMainWindow):
         g_label.setFixedWidth(45)
         g_row.addWidget(g_label)
         self.g_expression_input = QLineEdit()
-        self.g_expression_input.setMaxLength(MAX_EXPRESSION_LENGTH)
         self.g_expression_input.setPlaceholderText("Opcional: segunda curva, ej. x**2")
         self.g_expression_input.returnPressed.connect(self._on_plot_clicked)
         g_row.addWidget(self.g_expression_input)
-        region_layout.addLayout(g_row)
+        text_inputs_layout.addLayout(g_row)
 
         # Límites a y b
         limits_row = QHBoxLayout()
@@ -330,7 +372,6 @@ class MainWindow(QMainWindow):
         label_a = QLabel("Límite a =")
         limits_row.addWidget(label_a)
         self.limit_a_input = QLineEdit()
-        self.limit_a_input.setMaxLength(MAX_EXPRESSION_LENGTH)
         self.limit_a_input.setPlaceholderText("ej. 0")
         self.limit_a_input.setFixedWidth(65)
         self.limit_a_input.returnPressed.connect(self._on_plot_clicked)
@@ -339,12 +380,19 @@ class MainWindow(QMainWindow):
         label_b = QLabel("Límite b =")
         limits_row.addWidget(label_b)
         self.limit_b_input = QLineEdit()
-        self.limit_b_input.setMaxLength(MAX_EXPRESSION_LENGTH)
         self.limit_b_input.setPlaceholderText("ej. 2")
         self.limit_b_input.setFixedWidth(65)
         self.limit_b_input.returnPressed.connect(self._on_plot_clicked)
         limits_row.addWidget(self.limit_b_input)
-        region_layout.addLayout(limits_row)
+        text_inputs_layout.addLayout(limits_row)
+        region_layout.addWidget(self._text_inputs)
+
+        # Lo que se escriba (o se rellene solo, como los límites de una interpolación) llega al
+        # editor visual si está activo.
+        # (Método enlazado, no lambda: una lambda que captura ``self`` crea un ciclo de
+        # referencias que se libera al cerrar Python, después de QApplication, y lo aborta.)
+        for name in FIELD_NAMES:
+            self._line_edit_for(name).textChanged.connect(self._on_line_edit_text_changed)
 
         sidebar_layout.addWidget(region_group)
 
@@ -373,7 +421,6 @@ class MainWindow(QMainWindow):
         self.axis_pos_label = QLabel("Posición k / h:")
         axis_pos_row.addWidget(self.axis_pos_label)
         self.axis_value_input = QLineEdit("0")
-        self.axis_value_input.setMaxLength(MAX_EXPRESSION_LENGTH)
         self.axis_value_input.setPlaceholderText("ej. 2 o -1")
         self.axis_value_input.setEnabled(False)
         self.axis_value_input.returnPressed.connect(self._on_plot_clicked)
@@ -430,7 +477,16 @@ class MainWindow(QMainWindow):
         sidebar_card = GlassCard(radius=22, glow=Palette.CYAN)
         sidebar_card_layout = QVBoxLayout(sidebar_card)
         sidebar_card_layout.setContentsMargins(14, 14, 14, 14)
-        sidebar_card_layout.addWidget(sidebar_widget)
+        # Panel desplazable: con el editor visual activo (o en pantallas de 768 px) el contenido
+        # no cabe entero y, sin desplazamiento, Qt comprimía las casillas por debajo de su mínimo.
+        self.sidebar_scroll = QScrollArea()
+        self.sidebar_scroll.setWidget(sidebar_widget)
+        self.sidebar_scroll.setWidgetResizable(True)
+        self.sidebar_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.sidebar_scroll.setFixedWidth(360)
+        self.sidebar_scroll.viewport().setAutoFillBackground(False)
+        sidebar_card_layout.addWidget(self.sidebar_scroll)
         main_layout.addWidget(sidebar_card)
 
         # ── Área gráfica principal con QTabWidget (derecha) ───────────────
@@ -555,6 +611,89 @@ class MainWindow(QMainWindow):
         # la importación de SymPy (no se arranca en modo síncrono / pruebas).
         QTimer.singleShot(600, self._prewarm_backend)
 
+        # Se recuerda el modo de escritura elegido la última vez.
+        if visual_ok and self._settings.value(_VISUAL_SETTING, False, type=bool):
+            self.visual_input_button.setChecked(True)
+
+
+    # ── Editor visual de fórmulas ──────────────────────────────────────────
+
+    def _line_edit_for(self, box: str) -> QLineEdit:
+        """Casilla de texto que hace de modelo para ``box`` (f, g, a o b)."""
+        return {
+            "f": self.expression_input,
+            "g": self.g_expression_input,
+            "a": self.limit_a_input,
+            "b": self.limit_b_input,
+        }[box]
+
+    def _visual_input_active(self) -> bool:
+        return self._visual_editor is not None and self.visual_input_button.isChecked()
+
+    def _ensure_visual_editor(self) -> VisualMathEditor | None:
+        """Crea el editor la primera vez (QtWebEngine tarda en arrancar: no se paga al abrir)."""
+        if self._visual_editor is None:
+            try:
+                editor = VisualMathEditor(self._text_inputs.parentWidget())
+            except Exception as exc:  # noqa: BLE001 - p. ej. QtWebEngine sin OpenGL
+                logger.exception("No se pudo crear el editor visual")
+                self._disable_visual_input(str(exc))
+                return None
+            editor.textChanged.connect(self._on_visual_text_changed)
+            editor.submitted.connect(self._on_plot_clicked)
+            editor.loadFailed.connect(self._disable_visual_input)
+            editor.hide()
+            self._region_layout.addWidget(editor)
+            self._visual_editor = editor
+        return self._visual_editor
+
+    def _on_visual_input_toggled(self, checked: bool) -> None:
+        """Cambia entre las casillas de texto y el editor visual, conservando lo escrito."""
+        if checked:
+            editor = self._ensure_visual_editor()
+            if editor is None:
+                return
+            for box in FIELD_NAMES:
+                editor.set_text(box, self._line_edit_for(box).text())
+            self._text_inputs.hide()
+            editor.show()
+            editor.focus_field("f")
+            self.visual_input_button.setText(_VISUAL_ON_TEXT)
+            self.status_bar.showMessage(
+                "Editor visual: usa los botones, o escribe / para fracciones, ^ para potencias y "
+                "sqrt para raíces. Enter calcula."
+            )
+        else:
+            if self._visual_editor is not None:
+                self._visual_editor.hide()
+            self._text_inputs.show()
+            self.visual_input_button.setText(_VISUAL_OFF_TEXT)
+        self._settings.setValue(_VISUAL_SETTING, checked)
+
+    def _disable_visual_input(self, reason: str) -> None:
+        """El editor no pudo cargarse: se vuelve al texto y se explica por qué."""
+        self.visual_input_button.setChecked(False)
+        self.visual_input_button.setEnabled(False)
+        self.visual_input_button.setToolTip(f"Editor visual no disponible: {reason}")
+        self._settings.setValue(_VISUAL_SETTING, False)
+        self.status_bar.showMessage(f"ℹ Editor visual no disponible: {reason}", 10000)
+
+    def _on_visual_text_changed(self, box: str, text: str) -> None:
+        """El editor tradujo una casilla: se copia a su QLineEdit (sin eco hacia el editor)."""
+        self._syncing_visual = True
+        try:
+            self._line_edit_for(box).setText(text)
+        finally:
+            self._syncing_visual = False
+
+    def _on_line_edit_text_changed(self, text: str) -> None:
+        """Un cambio hecho por código (p. ej. límites de una interpolación) llega al editor."""
+        if self._syncing_visual or not self._visual_input_active():
+            return
+        box = next((name for name in FIELD_NAMES if self._line_edit_for(name) is self.sender()), None)
+        if box is not None:
+            assert self._visual_editor is not None
+            self._visual_editor.set_text(box, text)
 
     # ── Manejo de controles ────────────────────────────────────────────────
 
@@ -577,8 +716,12 @@ class MainWindow(QMainWindow):
         if key not in self._invert_cache:
             if len(self._invert_cache) > 256:
                 self._invert_cache.clear()
-            # Siempre permitir inversión para simplificar la UI
-            self._invert_cache[key] = True
+            if not inversion_is_cheap(region):
+                # SymPy.solve en el hilo de Qt costaba hasta 1,2 s por cambio de eje; si no es un
+                # polinomio de grado bajo se habilita el método y el trabajo informa si no se puede.
+                self._invert_cache[key] = True
+            else:
+                self._invert_cache[key] = can_invert_for_method(region, probe, method)
         return self._invert_cache[key]
 
     def _update_method_availability(self) -> None:
@@ -610,10 +753,7 @@ class MainWindow(QMainWindow):
 
         for combo_index, method in self._METHOD_BY_INDEX.items():
             item = model.item(combo_index)  # type: ignore[attr-defined]
-            # Determinar directamente la compatibilidad del método con el eje
-            direct = True if (method == SolidMethod.DISKS and horizontal) or \
-                       (method == SolidMethod.WASHERS and horizontal) or \
-                       (method == SolidMethod.SHELLS and not horizontal) else False
+            direct = is_method_compatible(method, probe)
             invertible = False
             if not direct and probe_region is not None:
                 try:
@@ -860,6 +1000,12 @@ class MainWindow(QMainWindow):
         3. Si hay límites a y b: validar límites y eje, y lanzar el trabajo de cálculo
            (área, malla 3D, recomendación y volumen) fuera del hilo de la interfaz.
         """
+        if self._visual_input_active() and (problem := self._visual_editor.first_error()) is not None:
+            box, message = problem
+            self._visual_editor.show_errors()
+            self._input_error(f"{FIELD_LABELS[box]}: {message}")
+            return
+
         raw_f = self.expression_input.text().strip()
         raw_g = self.g_expression_input.text().strip()
 
@@ -1529,8 +1675,7 @@ class MainWindow(QMainWindow):
             self.revolution_slider.blockSignals(False)
             self.play_revolution_btn.setText("▶ Girar poco a poco (GeoGebra)")
             if self._current_region is not None:
-                num_a = float(self._current_region.a)
-                num_b = float(self._current_region.b)
+                num_a, num_b, _, _ = _evaluate_bounds(self._current_region.a, self._current_region.b)
                 mid_x = 0.5 * (num_a + num_b)
                 self.slice_pos_label.setText(f"{self._current_region.variable} = {mid_x:.2f}")
         else:
@@ -1590,8 +1735,7 @@ class MainWindow(QMainWindow):
 
     def _on_slice_slider_changed(self, _val: int) -> None:
         if self._current_region is not None:
-            num_a = float(self._current_region.a)
-            num_b = float(self._current_region.b)
+            num_a, num_b, _, _ = _evaluate_bounds(self._current_region.a, self._current_region.b)
             frac = self.slice_slider.value() / 1000.0
             t_pos = num_a + frac * (num_b - num_a)
             self.slice_pos_label.setText(f"{self._current_region.variable} = {t_pos:.2f}")
@@ -1619,40 +1763,34 @@ class MainWindow(QMainWindow):
             return
 
         theta_rad = math.radians(self.revolution_slider.value())
-        num_a = float(self._current_region.a)
-        num_b = float(self._current_region.b)
+        num_a, num_b, _, _ = _evaluate_bounds(self._current_region.a, self._current_region.b)
 
         if self.slice_check.isChecked():
             frac = self.slice_slider.value() / 1000.0
             t_pos = num_a + frac * (num_b - num_a)
             self.slice_pos_label.setText(f"{self._current_region.variable} = {t_pos:.2f}")
-            # Fallback: usar malla de sólido con posición representativa
-            # Fallback: malla simple para visualización
-            mesh = SolidMesh3D(
-                x_outer=np.linspace(0, 1, 20),
-                y_outer=np.sin(np.linspace(0, 1, 20))[:, None],
-                z_outer=np.tile(np.linspace(0, 2*np.pi, 20), 20).reshape(-1, 1),
-                is_valid=True
+            mesh = generate_representative_slice(
+                self._current_region,
+                axis=self._current_axis,
+                position=t_pos,
+                theta_max=theta_rad,
             )
             color_outer = "#F59E0B"
         elif self.riemann_check.isChecked():
             n = self.riemann_slider.value()
             self.riemann_count_label.setText(f"N = {n}")
-            # Fallback: usar malla simple para visualización
-            mesh = SolidMesh3D(
-                x_outer=np.linspace(0, 1, 20),
-                y_outer=np.sin(np.linspace(0, 1, 20))[:, None],
-                z_outer=np.tile(np.linspace(0, 2*np.pi, 20), 20).reshape(-1, 1),
-                is_valid=True
+            mesh = generate_riemann_mesh(
+                self._current_region,
+                axis=self._current_axis,
+                num_disks=n,
+                theta_max=theta_rad,
             )
             color_outer = "#38BDF8"
         else:
-            # Fallback: malla simple para visualización
-            mesh = SolidMesh3D(
-                x_outer=np.linspace(0, 1, 20),
-                y_outer=np.sin(np.linspace(0, 1, 20))[:, None],
-                z_outer=np.tile(np.linspace(0, 2*np.pi, 20), 20).reshape(-1, 1),
-                is_valid=True
+            mesh = generate_solid_mesh(
+                self._current_region,
+                axis=self._current_axis,
+                theta_max=theta_rad,
             )
             color_outer = "#5CE1FF"
 

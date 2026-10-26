@@ -102,3 +102,41 @@
 
 **Resultado:** implementación propia (ideas, no código), probada de forma aislada en `tests/test_adaptive.py`. La capa `viz` sigue sin calcular matemáticas: recibe la ventana vertical ya calculada (`robust_y_window`) y solo la aplica (`PlotCanvas.set_y_window`).
 
+---
+
+## D6 — Editor visual de fórmulas con MathLive y traducción en el dominio
+
+**Fecha:** 2026-10-24
+**Decisión:** Ofrecer un modo de escritura visual (fracciones, raíces y potencias dibujadas) con MathLive dentro de un `QWebEngineView`, y traducir su LaTeX a la sintaxis de texto del parser en `core/latex_input.py`.
+
+**Contexto:** Muchos estudiantes no saben escribir `((x^2+1)/sqrt(x))` en texto plano; GeoGebra y las calculadoras con «Natural Display» resuelven esto con plantillas. QtWebEngine ya es dependencia (visor Three.js).
+
+**Alternativas consideradas:**
+
+| Alternativa | Razón para descartar |
+|---|---|
+| Editor de plantillas propio en Qt (QPainter) | Semanas de trabajo para cursor, selección y anidamiento que MathLive ya resuelve. |
+| MathQuill | Requiere jQuery y su mantenimiento es menor. |
+| `sympy.parsing.latex.parse_latex` | Exige `antlr4` o `lark` (dependencia nueva) y saltaría las validaciones del parser seguro. |
+| Salida MathJSON de MathLive | Requiere además el Compute Engine (otra biblioteca grande). |
+
+**Resultado:** el LaTeX se traduce a texto y pasa por `parse_math_expression` como cualquier entrada escrita; las `QLineEdit` siguen siendo el modelo, así que el resto de la ventana no cambió. MathLive (MIT) se empaqueta sin conexión en `resources/mathlive/`.
+
+---
+
+## D7 — Sin datos personales en el repositorio, con comprobación automática
+
+**Fecha:** 2026-10-24
+**Decisión:** El único dato personal permitido es el nombre del autor en los avisos de autoría. Correos, rutas absolutas de carpetas personales, nombres de usuario de equipos o cuentas, nombres de equipo, direcciones IP y credenciales no se escriben en ningún archivo. `tests/test_privacy.py` lo comprueba en cada ejecución de la suite.
+
+**Contexto:** Los registros de sesión guardaban la ruta local del proyecto (con el nombre de usuario del equipo) y varios informes enlazaban la URL del repositorio con el usuario de GitHub. El proyecto podría publicarse como código abierto.
+
+**Alternativas consideradas:**
+
+| Alternativa | Razón para descartar |
+|---|---|
+| Revisión manual antes de cada publicación | Se olvida; los datos volvieron a aparecer en cada sesión. |
+| Lista de términos prohibidos dentro del repositorio | Escribiría en el repositorio justo los datos que se quieren ocultar. Se usa la variable de entorno `INTEGRALLAB_PRIVATE_TERMS`. |
+
+**Resultado:** documentación limpiada (detalle en `docs/PRIVACIDAD.md`, sin repetir los valores); prueba automática; guía para los metadatos de Git y el historial, que la limpieza de archivos no alcanza.
+

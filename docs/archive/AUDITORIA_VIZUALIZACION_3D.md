@@ -1,7 +1,7 @@
 # 📋 Informe de Auditoría - Visualización 3D IntegralLab
 
 **Fecha:** 2026-10-19  
-**Proyecto:** https://github.com/lassombrita/calculo  
+**Proyecto:** IntegralLab (repositorio del proyecto)  
 **Autor:** Ingeniería Senior en Python, PySide6 y Qt WebEngine  
 **Estado:** ✅ Fase 3 completada (Prototipo Experimental)
 
@@ -581,6 +581,6 @@ pyinstaller ^--onefile ^--noconsole ^--add-data="integrallab/resources/threejs_b
 
 ---
 
-**Informe generado para:** https://github.com/lassombrita/calculo  
+**Informe generado para:** IntegralLab (repositorio del proyecto)  
 **Versión:** Three.js r160  
 **Fecha:** 2026-10-19

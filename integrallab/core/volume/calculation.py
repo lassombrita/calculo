@@ -230,10 +230,35 @@ def calculate_volume_from_region(region: Region2D, axis: Axis) -> VolumeResult:
         )
 
 
+def calculate_revolution_volume(
+    region: Region2D,
+    axis: Axis = Axis("VERTICAL"),
+    method: Optional[Literal["DISKS", "WASHERS", "SHELLS", "CASQUILLOS"]] = None
+) -> VolumeResult:
+    """Calcula volumen de revolución delegando al método apropiado.
+    
+    Esta función wrapper proporciona compatibilidad con la API antigua mientras
+    mantiene la arquitectura modular actual (M4-M5).
+    
+    Args:
+        region: Región2D que define la región plana a rotar.
+        axis: Eje de rotación (VERTICAL/HORIZONTAL).
+        method: Método deseado o None para selección automática.
+    
+    Returns:
+        VolumeResult con resultado del cálculo.
+    """
+    if method is None:
+        # Selección automática según región
+        method = region.method
+    
+    return calculate_volume_from_region(region, axis)
+
 __all__ = [
     "VolumeResult",
     "calculate_disk_volume",
     "calculate_washer_volume", 
     "calculate_shell_volume",
     "calculate_volume_from_region",
+    "calculate_revolution_volume",  # Función wrapper para compatibilidad API antigua
 ]

@@ -1,7 +1,7 @@
 # 📊 INFORME EJECUTIVO - Integración Three.js en IntegralLab
 
 **Fecha:** 2026-10-19  
-**Proyecto:** https://github.com/lassombrita/calculo  
+**Proyecto:** IntegralLab (repositorio del proyecto)  
 **Estado:** ✅ Fase 3 Completada (Prototipo Experimental Listo para Aprobación)
 
 ---
@@ -26,7 +26,7 @@ He completado el **Fase 3: Prototipo Aislado** del proyecto de mejora de visuali
 
 ### 1. ✅ Informe de Auditoría
 
-**Archivo:** [`AUDITORIA_VIZUALIZACION_3D.md`](C:/Users/merej/OneDrive/Desktop/Calculo/AUDITORIA_VIZUALIZACION_3D.md) (~586 líneas)
+**Archivo:** [`AUDITORIA_VIZUALIZACION_3D.md`](AUDITORIA_VIZUALIZACION_3D.md) (~586 líneas)
 
 **Contenido:**
 - Análisis exhaustivo del sistema actual (Matplotlib 3D)
@@ -42,7 +42,7 @@ He completado el **Fase 3: Prototipo Aislado** del proyecto de mejora de visuali
 
 ### 2. ✅ Comparativa GeoGebra vs Three.js
 
-**Archivo:** [`EVALUACION_TECNICA_THREEJS.md`](C:/Users/merej/OneDrive/Desktop/Calculo/EVALUACION_TECNICA_THREEJS.md) (~310 líneas)
+**Archivo:** [`EVALUACION_TECNICA_THREEJS.md`](EVALUACION_TECNICA_THREEJS.md) (~310 líneas)
 
 **Conclusiones Principales:**
 
@@ -66,7 +66,7 @@ He completado el **Fase 3: Prototipo Aislado** del proyecto de mejora de visuali
 
 ### 3. ✅ Arquitectura Recomendada
 
-**Ubicación:** Documento integrado en [`AUDITORIA_VIZUALIZACION_3D.md`](C:/Users/merej/OneDrive/Desktop/Calculo/AUDITORIA_VIZUALIZACION_3D.md)
+**Ubicación:** Documento integrado en [`AUDITORIA_VIZUALIZACION_3D.md`](AUDITORIA_VIZUALIZACION_3D.md)
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -103,7 +103,7 @@ He completado el **Fase 3: Prototipo Aislado** del proyecto de mejora de visuali
 
 ### 4. ✅ Prototipo Experimental
 
-**Ubicación:** [`integrallab/viz/experimental/`](C:/Users/merej/OneDrive/Desktop/Calculo/integrallab/viz/experimental/)
+**Ubicación:** [`integrallab/viz/experimental/`](../../integrallab/viz/experimental/)
 
 **Archivos creados:**
 
@@ -214,7 +214,7 @@ Total: 5/5 pruebas pasadas
 
 ### 5. ✅ Pruebas de Cámara, Geometría y Funcionamiento Offline
 
-**Ubicación:** Documento integrado en [`PRUEBAS_PROTOTIPO_THREEJS.md`](C:/Users/merej/OneDrive/Desktop/Calculo/docs/PRUEBAS_PROTOTIPO_THREEJS.md) (~405 líneas)
+**Ubicación:** Documento integrado en [`PRUEBAS_PROTOTIPO_THREEJS.md`](../PRUEBAS_PROTOTIPO_THREEJS.md) (~405 líneas)
 
 #### Pruebas de Cámara Realizadas
 
@@ -393,11 +393,11 @@ pyinstaller --onefile --noconsole ^--add-data="integrallab/resources/threejs_bun
 
 | Entregable | Estado | Ubicación |
 |------------|--------|-----------|
-| **1. Informe de auditoría** | ✅ Completado | [`AUDITORIA_VIZUALIZACION_3D.md`](C:/Users/merej/OneDrive/Desktop/Calculo/AUDITORIA_VIZUALIZACION_3D.md) |
-| **2. Comparativa GeoGebra vs Three.js** | ✅ Completado | [`EVALUACION_TECNICA_THREEJS.md`](C:/Users/merej/OneDrive/Desktop/Calculo/EVALUACION_TECNICA_THREEJS.md) |
-| **3. Arquitectura recomendada** | ✅ Documentado | Sección en [`AUDITORIA_VIZUALIZACION_3D.md`](C:/Users/merej/OneDrive/Desktop/Calculo/AUDITORIA_VIZUALIZACION_3D.md) |
+| **1. Informe de auditoría** | ✅ Completado | [`AUDITORIA_VIZUALIZACION_3D.md`](AUDITORIA_VIZUALIZACION_3D.md) |
+| **2. Comparativa GeoGebra vs Three.js** | ✅ Completado | [`EVALUACION_TECNICA_THREEJS.md`](EVALUACION_TECNICA_THREEJS.md) |
+| **3. Arquitectura recomendada** | ✅ Documentado | Sección en [`AUDITORIA_VIZUALIZACION_3D.md`](AUDITORIA_VIZUALIZACION_3D.md) |
 | **4. Prototipo experimental** | ✅ Completado | `integrallab/viz/experimental/` + bundle en `resources/` |
-| **5. Pruebas de cámara, geometría y offline** | ✅ Ejecutadas | [`PRUEBAS_PROTOTIPO_THREEJS.md`](C:/Users/merej/OneDrive/Desktop/Calculo/docs/PRUEBAS_PROTOTIPO_THREEJS.md) |
+| **5. Pruebas de cámara, geometría y offline** | ✅ Ejecutadas | [`PRUEBAS_PROTOTIPO_THREEJS.md`](../PRUEBAS_PROTOTIPO_THREEJS.md) |
 | **6. Informe archivos modificados y rollback** | ✅ Documentado | Sección en `AUDITORIA_VIZUALIZACION_3D.md` |
 
 ---
@@ -416,6 +416,6 @@ El **Fase 3: Prototipo Aislado** ha sido completado con éxito:
 
 ---
 
-**Informe generado para:** https://github.com/lassombrita/calculo  
+**Informe generado para:** IntegralLab (repositorio del proyecto)  
 **Versión Three.js:** r160  
 **Fecha:** 2026-10-19

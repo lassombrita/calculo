@@ -1,7 +1,7 @@
 # 📊 Evaluación Técnica: Alternativas para Visualización 3D en IntegralLab
 
 **Fecha:** 2026-10-19  
-**Proyecto:** https://github.com/lassombrita/calculo  
+**Proyecto:** IntegralLab (repositorio del proyecto)  
 **Contexto:** Mejorar interacción, rotación de cámara y zoom de sólidos de revolución
 
 ---
@@ -306,5 +306,5 @@ GeoGebra tiene limitaciones significativas:
 
 ---
 
-**Documento generado para:** https://github.com/lassombrita/calculo  
+**Documento generado para:** IntegralLab (repositorio del proyecto)  
 **Versión de evaluación:** 2026-10-19

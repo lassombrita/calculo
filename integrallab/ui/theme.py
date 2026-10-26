@@ -110,6 +110,13 @@ QPushButton#PrimaryButton:pressed { background: qlineargradient(x1:0,y1:0,x2:1,y
 QPushButton#PrimaryButton:disabled { background: rgba(255,255,255,0.06); color: $faint; }
 QLabel#Result { color: $text; font-size: 12px; font-weight: 600; }
 
+/* Alternar entre texto y editor visual de fórmulas. */
+QPushButton#ModeToggle { background: rgba(157,140,255,0.10); border: 1px solid rgba(157,140,255,0.35);
+                         border-radius: 9px; padding: 4px 12px; color: $violet; font-size: 11px; font-weight: 600; }
+QPushButton#ModeToggle:hover { background: rgba(157,140,255,0.18); }
+QPushButton#ModeToggle:checked { background: rgba(92,225,255,0.12); border: 1px solid rgba(92,225,255,0.45); color: $cyan; }
+QPushButton#ModeToggle:disabled { background: transparent; border: 1px solid rgba(255,255,255,0.06); color: $faint; }
+
 QStatusBar { color: $muted; background: transparent; }
 QStatusBar::item { border: none; }
 QStatusBar QLabel { padding-left: 14px; }
