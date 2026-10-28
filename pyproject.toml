@@ -65,5 +65,3 @@ ignore-words-list = "nd,inam"
 [project.scripts]
 integrallab = "integrallab.__main__:run"
 # Nota: El comando "integrallab" está en pyproject.toml. La función run() ya existe en __main__.py.
-
-<EOF>

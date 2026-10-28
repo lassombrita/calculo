@@ -1,5 +1,7 @@
 # Auditoría técnica de IntegralLab
 
+> **Estado (2026-10-27):** documento histórico. Los hallazgos A1–A8, M4–M8, M12 y M13 se corrigieron; el estado de cada uno y los hallazgos nuevos están en [`AUDITORIA_2026-10-27.md`](AUDITORIA_2026-10-27.md) y en [`PROJECT_STATUS.md`](PROJECT_STATUS.md). Las líneas citadas abajo corresponden al código de esa fecha.
+
 **Fecha:** 24 de octubre de 2026 · **Código auditado:** commit `adcedc7` · **Estado de los hallazgos:** pendientes de aplicar
 
 > **Cómo leer este documento.** Es una fotografía del código en el commit `adcedc7`: los números de línea citados corresponden a esa versión (después del parche del editor visual, `ui/main_window.py` se desplazó; busque por nombre de función). Ningún hallazgo de severidad alta o media está corregido todavía, salvo lo indicado en «Relación con el editor visual» al final. Cuando se corrija uno, anótelo en `docs/PROJECT_STATUS.md` con su identificador (A1–A8, M1–M13).

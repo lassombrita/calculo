@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from integrallab.core.operations import NumericResult, integrate_definite, subtract_expressions
+from integrallab.core.operations import NumericResult, area_between, integrate_definite, subtract_expressions
 from integrallab.core.parser import ParsedExpression
 from integrallab.core.solids import (
     AxisOrientation,
@@ -74,6 +74,7 @@ class CalculationOutput:
     mesh: SolidMesh3D | None
     axis: RevolutionAxis
     chosen_method: SolidMethod | None
+    area: NumericResult | None = None   # ∫|f − g| partida en los cruces (res_2d es ∫(f − g))
 
 
 def _not_computed(method: SolidMethod | None, message: str) -> VolumeResult:
@@ -99,6 +100,25 @@ def _fill_bad_rows(grid: np.ndarray | None) -> np.ndarray | None:
     for col in range(out.shape[1]):
         out[~good, col] = np.interp(rows[~good], rows[good], out[good, col])
     return out
+
+
+def sanitize_mesh(mesh: SolidMesh3D) -> SolidMesh3D | None:
+    """Malla sin inf/nan para los visores, o ``None`` si no se puede reparar.
+
+    Las filas no finitas (un extremo singular como log x en 0, o un punto aislado como sin(x)/x
+    en 0) se rellenan desde sus vecinas. La usan también los deslizadores: antes Three.js recibía
+    una carga vacía y se quedaba congelado en el cuadro anterior (hallazgo A8, punto 5).
+    """
+    if not mesh.is_valid:
+        return None
+    if _finite_mesh(mesh):
+        return mesh
+    fixed = replace(
+        mesh,
+        x_outer=_fill_bad_rows(mesh.x_outer), y_outer=_fill_bad_rows(mesh.y_outer), z_outer=_fill_bad_rows(mesh.z_outer),
+        x_inner=_fill_bad_rows(mesh.x_inner), y_inner=_fill_bad_rows(mesh.y_inner), z_inner=_fill_bad_rows(mesh.z_inner),
+    )
+    return fixed if _finite_mesh(fixed) else None
 
 
 def _display_mesh(region: Region2D, request: CalculationRequest) -> SolidMesh3D | None:
@@ -128,14 +148,7 @@ def _display_mesh(region: Region2D, request: CalculationRequest) -> SolidMesh3D 
             mesh = nudged
     except Exception:  # noqa: BLE001
         pass
-    if _finite_mesh(mesh):
-        return mesh
-    mesh = replace(
-        mesh,
-        x_outer=_fill_bad_rows(mesh.x_outer), y_outer=_fill_bad_rows(mesh.y_outer), z_outer=_fill_bad_rows(mesh.z_outer),
-        x_inner=_fill_bad_rows(mesh.x_inner), y_inner=_fill_bad_rows(mesh.y_inner), z_inner=_fill_bad_rows(mesh.z_inner),
-    )
-    return mesh if _finite_mesh(mesh) else None
+    return sanitize_mesh(mesh)
 
 
 def run_calculation(
@@ -215,15 +228,17 @@ def run_calculation(
         var_sym = sympy.Symbol(region.variable)
         f_sym = request.f.sympy_expr
         g_sym = request.g.sympy_expr if request.g is not None else sympy.Integer(0)
-        diff_sym = sympy.Abs(f_sym - g_sym)
-        fn = sympy.lambdify(var_sym, diff_sym, modules="mpmath")
-        area_val = float(mpmath.quad(fn, [a, b]))
-        res_2d = NumericResult(
-            value=area_val,
-            exact_plain_text=f"{area_val:.5f}",
-            exact_latex=f"{area_val:.5f}",
-            is_success=True,
-        )
+        from integrallab.core.solids import find_curve_crossings
+        from integrallab.core.volume.pieces import real_root_form
+
+        diff_sym = real_root_form(f_sym - g_sym)  # ∛x real, como en la gráfica
+        cuts = [c for c, _ in find_curve_crossings(f_sym, g_sym, var_sym, 0.0, a, b, method=SolidMethod.SHELLS)]
+        nodes = sorted({a, b, *cuts, *np.linspace(a, b, 17).tolist()})
+        signed_val = float(mpmath.quad(sympy.lambdify(var_sym, diff_sym, modules="mpmath"), nodes))
+        area_val = float(mpmath.quad(sympy.lambdify(var_sym, sympy.Abs(diff_sym), modules="mpmath"), nodes))
+        # Ruta numérica: el valor es una aproximación, no una forma exacta (hallazgo M7).
+        res_2d = NumericResult(signed_val, f"≈ {signed_val:.6g}", rf"\approx {signed_val:.6g}", True)
+        area_res = NumericResult(area_val, f"≈ {area_val:.6g}", rf"\approx {area_val:.6g}", True)
         vol_val = numeric_volume(region, request.axis)
         method = request.method or (
             SolidMethod.SHELLS if request.axis.orientation == AxisOrientation.VERTICAL else SolidMethod.WASHERS
@@ -232,12 +247,15 @@ def run_calculation(
             method=method,
             is_success=vol_val is not None,
             numeric_value=vol_val,
-            exact_plain_text=f"{vol_val:.5f}" if vol_val is not None else "",
-            exact_latex=f"{vol_val:.5f}" if vol_val is not None else "",
+            exact_plain_text=f"≈ {vol_val:.6g}" if vol_val is not None else "",
+            exact_latex=rf"\approx {vol_val:.6g}" if vol_val is not None else "",
             steps=[],
-            warnings=["Cálculo numérico (sin forma exacta)."],
+            warnings=[
+                "Aproximación numérica: SymPy no terminó a tiempo, así que no hay forma exacta ni "
+                "desarrollo paso a paso para este caso."
+            ],
         )
-        return CalculationOutput(res_2d, region, None, vol_res, mesh, request.axis, request.method)
+        return CalculationOutput(res_2d, region, None, vol_res, mesh, request.axis, request.method, area_res)
 
     integrand = subtract_expressions(request.f, request.g) if request.g is not None else request.f
     res_2d = integrate_definite(integrand, request.a_text, request.b_text)
@@ -248,11 +266,13 @@ def run_calculation(
         )
 
     checkpoint()
+    area_res = area_between(request.f, request.g, request.a_text, request.b_text)
+    checkpoint()
     rec = recommend_method(region, request.axis)
     checkpoint()
     vol_res = calculate_revolution_volume(region, request.axis, method=request.method)
     checkpoint()
-    return CalculationOutput(res_2d, region, rec, vol_res, mesh, request.axis, request.method)
+    return CalculationOutput(res_2d, region, rec, vol_res, mesh, request.axis, request.method, area_res)
 
 
 def serve_requests(

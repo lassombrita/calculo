@@ -63,7 +63,8 @@ def test_shells_with_crossing_curves(axis: RevolutionAxis, expected: float) -> N
 
 def test_shells_with_crossings_show_one_integral_per_piece() -> None:
     res = calculate_revolution_volume(Region2D("x", "x**2", 0, 2), RevolutionAxis.y_axis(), SolidMethod.SHELLS)
-    assert [s.expression_plain_text for s in res.steps][2] == "V_1 = pi/6; V_2 = 17*pi/6"
+    per_piece = next(s for s in res.steps if "Cálculo de cada integral" in s.title)
+    assert per_piece.expression_plain_text == "V_1 = pi/6; V_2 = 17*pi/6"
     assert res.integral_setup_latex.count("\\int") == 2  # sin |f − g| convertido en (f − g)
 
 

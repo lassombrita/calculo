@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover
     _SYMPY_AVAILABLE = False
 
 from integrallab.core.parser import ParsedExpression, parse_math_expression
+from integrallab.core.volume.pieces import is_odd_root, real_branch, sign_cut_points, sign_on
 
 
 @dataclass(frozen=True)
@@ -150,7 +151,7 @@ def integrate_definite(
                 f"Los límites de integración deben ser finitos. Obtenido: [{lo}, {hi}]."
             )
 
-        result_sym = sympy.integrate(parsed.sympy_expr, (sym_var, sym_lower, sym_upper))
+        result_sym = _real_definite_integral(parsed.sympy_expr, sym_var, sym_lower, sym_upper, lo, hi)
 
         # Resultado complejo: la función no es real en todo el intervalo (sqrt(x) en [-1, 1]
         # devolvía «2/3 + 2*I/3» como área).

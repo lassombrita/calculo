@@ -35,11 +35,11 @@ from pathlib import Path
 
 # PySide6 (UI gráfico)
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QSplitter, QWebEngineView, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QSplitter, QLabel, QPushButton,
     QMessageBox, QFrame
 )
 from PySide6.QtCore import Qt, Signal, QObject, Property, Slot
-from PySide6.QtWebChannel import QWebChannel, QWebEngineView as _QtQWebEngineView
+from PySide6.QtWebChannel import QWebChannel
 
 
 class StepsView(QWidget):
@@ -69,7 +69,8 @@ class StepsView(QWidget):
         self.setMinimumSize(800, 600)
         
         # WebView para renderizado web con MathJax
-        self.web_view = _QtQWebEngineView()
+        from PySide6.QtWebEngineWidgets import QWebEngineView
+        self.web_view = QWebEngineView()
         self.web_view.setMinimumSize(400, 300)
         
         # Canal QWebChannel para comunicación bidireccional

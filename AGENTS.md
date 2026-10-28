@@ -108,7 +108,8 @@ Licencias de terceros: `THIRD_PARTY_NOTICES.md`.
 | 12. Interpolación numérica, Three.js y auditoría técnica | ✅ Completada |
 | Editor visual de fórmulas | ✅ Completado (2026-10-24) |
 | Documentación y privacidad | ✅ Completado (2026-10-24) |
-| Auditoría del 2026-10-27: inversión por franjas, radios con signo, raíces reales, área, desglose interactivo, deslizadores, parser | ✅ Completado (523 pruebas pasando y 1 omitida) |
+| Auditoría del 2026-10-27: inversión por franjas, radios con signo, raíces reales, área, desglose interactivo, deslizadores, parser | ✅ Completado (523 pruebas pasando y 1 omitida)
+| Limpieza de código heredado, M1/M2, M9–M11 y metadatos de `pyproject.toml` | ⏳ Pendiente (requiere decisión del autor) |
 
 Véase `docs/PROJECT_STATUS.md` para el estado detallado.
 

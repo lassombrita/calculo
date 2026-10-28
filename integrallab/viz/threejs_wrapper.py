@@ -237,6 +237,11 @@ class ThreeJSViewer(QWidget):
         self._webgl_ok: bool | None = None
         self._status_reason: str = ""
         self._pending_mesh_data: dict[str, Any] | None = None
+        # Control de vuelo: un solo envío a JavaScript a la vez. Si el deslizador va más rápido
+        # que el visor, solo se conserva el último cuadro (antes las llamadas se encolaban y la
+        # vista llegaba tarde).
+        self._in_flight = False
+        self._queued_data: dict[str, Any] | None = None
 
         if WEBENGINE_AVAILABLE:
             self._view = QWebEngineView(parent=self)
@@ -285,6 +290,7 @@ class ThreeJSViewer(QWidget):
 
     def _on_load_finished(self, ok: bool) -> None:
         """Al cargar la página, pregunta a JavaScript si WebGL arrancó (handshake)."""
+        self._in_flight = False  # una página recargada no responde los envíos anteriores
         if not ok:
             self._set_status(False, "No se pudo cargar el visor 3D (threejs_bundle.html).")
             return
@@ -359,25 +365,64 @@ class ThreeJSViewer(QWidget):
             return False
 
         # Escapar < y > para evitar cualquier cierre de contexto o inyección en el evaluador JS
+        if self._in_flight:
+            self._queued_data = data
+            return True
         json_data = json.dumps(data, separators=(",", ":")).replace("<", "\\u003c").replace(">", "\\u003e")
         js_code = (
             "(window.IntegralLab3D && window.IntegralLab3D.renderSolid) ? "
             f"window.IntegralLab3D.renderSolid({json_data}) : null"
         )
+        self._in_flight = True
         self._view.page().runJavaScript(js_code, 0, self._on_render_reply)
         return True
 
+    def _flush_queue(self) -> None:
+        self._in_flight = False
+        if self._queued_data is not None and self._is_ready:
+            data, self._queued_data = self._queued_data, None
+            self._dispatch_render(data)
+
     def _on_render_reply(self, reply: object) -> None:
-        """Detecta, tras cada envío, si el contexto WebGL se perdió."""
+        """Detecta, tras cada envío, si el contexto WebGL se perdió.
+
+        Una respuesta vacía (una excepción puntual en ``renderSolid``) ya no desactiva WebGL para
+        toda la sesión: se pregunta el estado real del visor y solo se desactiva si tampoco
+        responde.
+        """
         if reply is None:
-            self._set_status(False, "El visor 3D no respondió.")
+            if self._view is not None:
+                self._view.page().runJavaScript(
+                    "window.IntegralLab3D ? window.IntegralLab3D.status() : null", 0, self._on_status_probe
+                )
+            else:
+                self._flush_queue()
             return
+        self._flush_queue()
         try:
             info = json.loads(reply) if isinstance(reply, str) else {}
         except ValueError:
             return
         if info and not info.get("ok", True):
             self._set_status(False, str(info.get("reason") or "WebGL dejó de responder."))
+
+    def _on_status_probe(self, reply: object) -> None:
+        if reply is None:
+            self._in_flight = False
+            self._queued_data = None
+            self._set_status(False, "El visor 3D no respondió.")
+            return
+        try:
+            info = json.loads(reply) if isinstance(reply, str) else {}
+        except ValueError:
+            info = {}
+        if info and not info.get("ok", True):
+            self._in_flight = False
+            self._queued_data = None
+            self._set_status(False, str(info.get("reason") or "WebGL dejó de responder."))
+            return
+        logger.debug("renderSolid falló una vez; el visor sigue activo")
+        self._flush_queue()
 
     def _run(self, code: str) -> None:
         if self._view and self._is_ready:
@@ -386,6 +431,7 @@ class ThreeJSViewer(QWidget):
     def clear_canvas(self) -> None:
         """Limpia el contenido del lienzo tridimensional."""
         self._pending_mesh_data = None
+        self._queued_data = None
         self._run("window.IntegralLab3D.clearCanvas();")
 
     def set_auto_rotate(self, enabled: bool) -> None:

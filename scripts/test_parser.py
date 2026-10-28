@@ -2,7 +2,8 @@
 """Script de pruebas para parse_math_expression - Bug fix completado."""
 
 import sys
-sys.path.insert(0, 'C:/Users/merej/OneDrive/Desktop/Calculo')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # raíz del repositorio
 
 from integrallab.core.parser import parse_math_expression
 

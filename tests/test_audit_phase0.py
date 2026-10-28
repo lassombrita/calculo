@@ -1,6 +1,7 @@
 """Pruebas unitarias de contención inmediata para la Fase 0 de la auditoría técnica."""
 from __future__ import annotations
 
+import math
 import re
 import time
 from pathlib import Path
@@ -17,6 +18,8 @@ from integrallab.core.solids import (
     Region2D,
     RevolutionAxis,
     SolidMethod,
+    VolumeResult,
+    _cross_check,
     calculate_revolution_volume,
 )
 
@@ -59,14 +62,23 @@ def test_is_points_input_linear_time_on_large_number():
     assert elapsed < 0.05, f"is_points_input tardó {elapsed:.3f} s (límite: 50 ms)"
 
 
-def test_cross_check_safety_net_catches_divergent_inversion():
-    """Verifica que la red de seguridad _cross_check rechace volúmenes invertidos erróneos."""
-    # x**3 en [0, 1] alrededor del eje Y con método forzado de Discos
-    region = Region2D("x**3", None, "0", "1")
-    axis = RevolutionAxis.y_axis()
+def test_inversion_by_strips_matches_quadrature():
+    """x³ en [0, 1] alrededor del eje Y con Discos: la franja va de x = ∛y a x = 1 (arandela).
 
-    res = calculate_revolution_volume(region, axis, method=SolidMethod.DISKS)
-    # Debe ser rechazado explicando que el planteamiento invertido no coincide con la cuadratura
+    La inversión antigua suponía el borde x = 0 y daba 3π/5; ahora coincide con la cuadratura: 2π/5.
+    """
+    region = Region2D("x**3", None, "0", "1")
+    res = calculate_revolution_volume(region, RevolutionAxis.y_axis(), method=SolidMethod.DISKS)
+    assert res.is_success
+    assert res.numeric_value == pytest.approx(2 * math.pi / 5, rel=1e-12)
+    assert res.method == SolidMethod.WASHERS  # la franja no toca el eje: hay hueco
+
+
+def test_cross_check_safety_net_rejects_divergent_inversion():
+    """La red de seguridad rechaza un volumen invertido que no coincide con la cuadratura."""
+    region = Region2D("x**3", None, "0", "1")
+    wrong = VolumeResult(method=SolidMethod.DISKS, numeric_value=3 * math.pi / 5)
+    res = _cross_check(wrong, region, RevolutionAxis.y_axis())
     assert not res.is_success
     assert "El planteamiento invertido da" in (res.error_message or "")
     assert "Use el método directo" in (res.error_message or "")

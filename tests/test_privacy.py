@@ -25,11 +25,12 @@ ROOT = Path(__file__).resolve().parents[1]
 # tal cual (sus licencias y avisos se conservan sin cambios; ver THIRD_PARTY_NOTICES.md).
 _SKIP_DIRS = {
     ".git", "__pycache__", ".pytest_cache", ".venv", "venv", "env", "build", "dist",
-    ".mypy_cache", ".ruff_cache", "node_modules", "scripts", "scratch",
+    ".mypy_cache", ".ruff_cache", "node_modules",
 }
 _THIRD_PARTY_DIRS = (
     Path("integrallab/resources/js"),
     Path("integrallab/resources/mathlive"),
+    Path("integrallab/resources/mathjax"),
 )
 _TEXT_SUFFIXES = {
     ".py", ".md", ".txt", ".toml", ".cfg", ".ini", ".json", ".html", ".css", ".js", ".yml", ".yaml",
@@ -57,9 +58,6 @@ def _project_text_files() -> list[Path]:
         if any(rel.is_relative_to(d) for d in _THIRD_PARTY_DIRS):
             continue
         if path.suffix.lower() not in _TEXT_SUFFIXES or path.name == Path(__file__).name:
-            continue
-        # Ignorar archivos temporales o de reporte de migración no versionados
-        if path.name in {"AUDITORIA_CORRECCIONES.md", "MIGRACION_COMPLETA.md", "REPORTE_MIGRACION.md", "RESUMEN_FINAL_v2.1.md"}:
             continue
         files.append(path)
     return files

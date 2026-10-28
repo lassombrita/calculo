@@ -233,6 +233,7 @@ class PlotCanvas3D(FigureCanvasQTAgg):
         alpha: float = 0.6,
         show_axis: bool = True,
         clear: bool = True,
+        keep_camera: bool = False,
     ) -> bool:
         """Renderiza una malla tridimensional de revolución en el lienzo.
 
@@ -243,6 +244,8 @@ class PlotCanvas3D(FigureCanvasQTAgg):
             alpha: Grado de transparencia (0.0 transparente a 1.0 opaco).
             show_axis: Si es True, traza una línea distintiva para el eje de giro.
             clear: Si es True, limpia el contenido previo del lienzo.
+            keep_camera: Conserva elevación, azimut y zoom y no relanza la rotación automática
+                (cuadros de los deslizadores). Antes cada movimiento devolvía la vista a 25°/45°/1.
 
         Returns:
             True si el sólido se dibujó correctamente, False si la malla es inválida.
@@ -250,7 +253,20 @@ class PlotCanvas3D(FigureCanvasQTAgg):
         if not mesh.is_valid:
             return False
 
-        if clear:
+        camera = (self.axes.elev, self.axes.azim, self._zoom) if keep_camera and self._surface_collections else None
+        limits = (self.axes.get_xlim3d(), self.axes.get_ylim3d(), self.axes.get_zlim3d()) if camera else None
+        if clear and camera is not None:
+            # Cuadro de un deslizador: se quitan solo las superficies y el eje. ``axes.clear()``
+            # rehacía marcas, etiquetas y estilo (≈ 18 ms de los ≈ 40 ms de cada cuadro).
+            for artist in [*self._surface_collections, *self._axis_lines]:
+                try:
+                    artist.remove()
+                except (ValueError, NotImplementedError):
+                    pass
+            self._surface_collections.clear()
+            self._axis_lines.clear()
+            self._stop_rotation()
+        elif clear:
             self.clear_canvas(redraw=False)  # un único dibujo al final, no dos
 
         # La malla puede venir densa (64 × 48) para el visor WebGL; Matplotlib la submuestrea a
@@ -304,11 +320,22 @@ class PlotCanvas3D(FigureCanvasQTAgg):
         if show_axis:
             self._draw_revolution_axis(mesh)
 
-        # 4. Proporciones reales (misma escala en los tres ejes) y zoom inicial
-        self._zoom = 1.0
-        self._fit_box_aspect()
+        # 4. Proporciones reales (misma escala en los tres ejes) y zoom inicial (o el anterior)
+        if camera is not None and limits is not None:
+            # Misma caja y cámara: abrir el ángulo no debe acercar ni girar la vista.
+            self.axes.set_xlim3d(*limits[0])
+            self.axes.set_ylim3d(*limits[1])
+            self.axes.set_zlim3d(*limits[2])
+            self.axes.view_init(elev=camera[0], azim=camera[1])
+            self._zoom = camera[2]
+            self._apply_view_scale()
+        else:
+            self._zoom = 1.0
+            self._fit_box_aspect()
 
         self.draw_idle()
+        if camera is not None:
+            return True
 
         # 5. Animación de rotación automática (360° en 4 segundos), solo si el lienzo se ve.
         #    Antes corría siempre: con el motor WebGL activo eran 80 redibujados ocultos de

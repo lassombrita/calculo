@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Sin red: solo archivos locales y el puente de Qt. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; script-src 'self' 'unsafe-inline' qrc:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:;">
+    <title>IntegralLab - Desglose paso a paso</title>
+    <link rel="stylesheet" href="steps.css">
+    <script>
+        // Configuración de MathJax 3 antes de cargarlo (ver docs/DESGLOSE_INTERACTIVO.md).
+        window.MathJax = {
+            loader: { load: [] },
+            tex: { packages: { "[+]": ["html"] } },   // \class{step-ID}{...} → atributo class en el SVG
+            svg: { fontCache: "local" },             // cada fórmula lleva sus glifos (tex2svgPromise no adjunta la caché global)
+            options: { enableMenu: false },          // sin menú contextual ni enlaces externos
+            startup: {
+                typeset: false,
+                ready: function () {
+                    MathJax.startup.defaultReady();
+                    MathJax.startup.promise.then(function () { window.IntegralSteps && IntegralSteps.mathReady(); });
+                }
+            }
+        };
+    </script>
+    <!-- MathJax 3.2.2 (Apache-2.0) empaquetado sin conexión: resources/mathjax/LICENSE_MATHJAX.txt -->
+    <script src="../mathjax/tex-svg-full.js" async></script>
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <script src="steps.js"></script>
+</head>
+<body>
+<header id="summary" hidden>
+    <div class="summary-text">
+        <h1 id="summary-title"></h1>
+        <p id="summary-meta"></p>
+    </div>
+    <div class="summary-actions">
+        <button type="button" id="expand-all">Desplegar todo</button>
+        <button type="button" id="collapse-all">Plegar todo</button>
+    </div>
+</header>
+<p id="hint" hidden>Toca las partes resaltadas de una fórmula para ver cómo se obtuvieron.</p>
+<main id="steps" aria-live="polite"></main>
+<p id="empty">Aquí aparecerá el desglose interactivo del cálculo.</p>
+</body>
+</html>

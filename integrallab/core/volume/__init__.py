@@ -1,37 +1,25 @@
-"""Paquete de cálculos de volúmenes de revolución.
+"""Piezas puras del cálculo de volúmenes de revolución.
 
-Expone la API pública para cálculos de volumen usando:
-  - calculate_disk_volume (discos)
-  - calculate_washer_volume (arandelas)  
-  - calculate_shell_volume (casquillos)
-  - Region2D inmutable con árbol
+Módulos:
 
-NOTAS DE ARQUITECTURA (M1-M4):
-- M1: Separación UI/Core — Funciones puras sin PySide6.
-- M2: Estado inmutable — Region2D con árbol.
-- M3: Tokenizador propio — En expressions.py.
-- M4: Delegación de cálculo — calculate_washer_volume delega a profile.py.
+- ``pieces``    — tramos de signo constante: puntos de corte, valores absolutos resueltos y
+  raíces impares con su rama real (∛x en x < 0), para que SymPy integre sin ramas complejas.
+- ``inversion`` — franjas horizontales para integrar en ``dy`` una región dada en ``x``
+  (Discos/Arandelas con eje vertical, Casquillos con eje horizontal).
+
+No dependen de ``integrallab.core.solids`` (que los usa), ni de Qt. Las funciones de alto nivel
+(``calculate_revolution_volume`` y compañía) siguen en ``integrallab.core.solids``.
 """
 
-from integrallab.core.volume.calculation import (  # noqa: F401
-    VolumeResult,
-    calculate_disk_volume,
-    calculate_washer_volume,
-    calculate_shell_volume,
-    calculate_volume_from_region,
-)
-from integrallab.core.domain.geometry import Axis, Region2D, RegionBuilder  # noqa: F401
+from integrallab.core.operations import _real_definite_integral, area_between  # noqa: F401 - Funciones internas no expuestas
+from integrallab.core.volume.pieces import real_branch, sample, sign_cut_points
+from integrallab.core.volume.inversion import Edge, Strip, horizontal_strips
 
-__version__ = "2026.1.0"
 __all__ = [
-    # Cálculos de volumen
-    "VolumeResult",
-    "calculate_disk_volume",
-    "calculate_washer_volume",
-    "calculate_shell_volume",
-    "calculate_volume_from_region",
-    # Región inmutable
-    "Axis",
-    "Region2D",
-    "RegionBuilder",
+    "Edge",
+    "Strip", 
+    "horizontal_strips",
+    "real_branch",
+    "sample",
+    "sign_cut_points",
 ]

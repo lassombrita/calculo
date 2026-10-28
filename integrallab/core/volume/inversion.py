@@ -1,333 +1,296 @@
-"""
-Inversión regional por franjas horizontales (Corrección A1).
+"""Franjas horizontales: integrar en ``dy`` una región dada en ``x`` (corrige el hallazgo A1).
 
-Este módulo implementa la corrección del bug A1: cuando la función no es monótona,
-la inversión simple falla porque asume que el radio interno = 0. 
+Responsabilidad:
+Describir la región ``R = {(x, y): a ≤ x ≤ b, mín(f, g) ≤ y ≤ máx(f, g)}`` como unión de franjas
+horizontales ``y ∈ [y₀, y₁]`` donde la sección ``S(y) = {x ∈ [a, b] : (x, y) ∈ R}`` tiene siempre
+la misma forma: uno o varios intervalos ``[x_izq(y), x_der(y)]`` cuyos bordes son la recta
+``x = a``, la recta ``x = b`` o una rama despejada de ``f`` o de ``g``.
 
-Solución A1:
-  - Buscar todos los puntos donde f(x) = k para un valor fijo k.
-  - Calcular volumen como suma algebraica de franjas con signos correctos.
+Algoritmo (sin adivinar la forma de la región):
 
-Arquitectura:
-  - _find_intersections(f, a, b, y_val): Encuentra x_i tales que f(x_i) = y_val.
-  - _compute_frame_contribution(f, x_left, x_right, y_val): Volumen de una franja horizontal.
-  - integrate_by_franches(f, a, b): Suma todas las franjas horizontales en [a,b].
+1. Valores críticos de ``y``: ``f`` y ``g`` en los extremos, en sus extremos locales interiores y
+   en los cruces ``f = g``. Ordenados, delimitan las franjas.
+2. En el centro de cada franja se calcula numéricamente la sección (muestreo fino y bisección) y
+   se etiqueta cada borde (recta o curva).
+3. Cada borde curvo se despeja con ``sympy.solve(Eq(y, f(x)), x)`` y se elige la rama que vale lo
+   mismo que el borde numérico; se comprueba en otros dos valores de ``y`` de la franja.
+4. Franjas contiguas con los mismos bordes se unen.
 
-Separación de capas: NO importa PySide6 aquí; es puro SymPy.
+Quien llama arma el integrando de cada franja (arandela o casquillo) y verifica el total contra la
+cuadratura independiente ``numeric_volume``.
 """
 
 from __future__ import annotations
-import math
-from typing import List, Tuple, Optional
 
-try:
-    from sympy import (
-        Symbol, Solve, Eq, simplify, integrate, limit, N, Abs, sqrt as sp_sqrt,
-        solve, dsolve, symbols, Integral, lambdify, Float, oo, Rational, pi, E, I,
-        expand, factor, trigsimp, powsimp, cancel, together, factor_list, apart,
-    )
-    from sympy.integrals import manualintegrate
-    _SYMPY_AVAILABLE = True
-except ImportError:
-    _SYMPY_AVAILABLE = False
+import logging
+from dataclasses import dataclass
+
+import numpy as np
+import sympy
+
+from integrallab.core.volume.pieces import roots_by_sign_change, sample
+
+__all__ = ["Edge", "InversionFailed", "Strip", "horizontal_strips"]
+
+logger = logging.getLogger(__name__)
+
+_GRID = 4001
+_MAX_STRIPS = 12
 
 
-def integrate_by_franches(
-    expr_str: str,
-    var_sym: str = "x",
-    a_val: float = 0.0,
-    b_val: float = 1.0,
-    y_val: Optional[float] = None,
-    num_subdivisions: int = 20,
-) -> Tuple[object, List[str]]:
-    """
-    Calcula volumen por inversión regional usando franjas horizontales.
+class InversionFailed(ValueError):
+    """La región no se pudo describir por franjas horizontales con despejes exactos."""
 
-    Parámetros:
-      - expr_str: Expresión en formato LaTeX (ej. "\\sin(x)^2").
-      - var_sym: Variable de integración ("x" o "y").
-      - a_val, b_val: Límites de integración numéricos.
-      - y_val: Valor fijo para franjas horizontales (si None, usa método híbrido).
-      - num_subdivisions: Subdivisiones para integración numérica si es necesario.
 
-    Retorna:
-      - Volumen calculado (símbolo o valor numérico).
-      - Lista de pasos explicativos para desarrollo pedagógico.
+@dataclass(frozen=True)
+class Edge:
+    """Borde de una sección horizontal: ``x = expr(y)``."""
 
-    Ejemplo de uso desde calculate_revolution_volume():
-        volume, steps = integrate_by_franches(
-            "\\sin(x)**2",  # expr_str
-            "x",             # var_sym  
-            0.0,             # a_val
-            pi/2,            # b_val
-            None,            # y_val (híbrido automático)
-        )
+    kind: str            # "a" | "b" (rectas verticales) | "f" | "g" (ramas despejadas)
+    expr: sympy.Expr     # x en función de y
 
-    Nota: Esta función corrige el bug A1 donde funciones no monótonas daban volúmenes negativos.
-    """
-    if not _SYMPY_AVAILABLE:
-        raise ImportError("SymPy requerido para integración por franjas.")
+    def describe(self, var: str) -> str:
+        names = {"a": "la recta", "b": "la recta", "f": "la curva f", "g": "la curva g"}
+        return f"{names[self.kind]} {var} = {sympy.sstr(self.expr)}"
 
-    # Parsear expresión con SymPy
-    try:
-        from integrallab.core.parser import parse_math_expression
-        expr_parsed = parse_math_expression(expr_str)
-    except Exception as e:
-        return 0.0, [f"Error parseando expresión: {e}"]
 
-    x_sym = Symbol(var_sym)
-    f_expr = expr_parsed.sympy_expr
-    
-    # Si no hay variable simbólica, asumir x
-    if f_expr.free_symbols != (x_sym,) and not any(v.name == var_sym for v in f_expr.atoms()):
+@dataclass(frozen=True)
+class Strip:
+    """Franja ``y ∈ [y0, y1]`` con su sección: intervalos ``(borde izquierdo, borde derecho)``."""
+
+    y0_num: float
+    y1_num: float
+    y0: sympy.Expr
+    y1: sympy.Expr
+    intervals: tuple[tuple[Edge, Edge], ...]
+
+
+def _exact(value: float, candidates: list[sympy.Expr]) -> sympy.Expr:
+    for cand in candidates:
         try:
-            # Buscar variable correcta
-            free_vars = list(f_expr.free_symbols)
-            if len(free_vars) != 1:
-                raise ValueError("Múltiples variables libres.")
-            x_sym = free_vars[0]
-            var_sym = x_sym.name
-        except Exception:
-            return 0.0, ["No se pudo determinar variable de integración."]
-
-    try:
-        # Método híbrido: usar franjas si la función es no monótona, discos/arandelas si es monótona
-        f_num = lambdify(x_sym, f_expr)
-        
-        # Verificar monotonía numérica
-        is_monotonic, monotonicity_issues = _check_monotonicity(f_num, a_val, b_val)
-        
-        if not is_monotonic:
-            # Función no monótona → usar integración por franjas horizontales
-            volume, steps = _integrate_by_horizontal_franches(
-                f_expr, x_sym, a_val, b_val, num_subdivisions=num_subdivisions
-            )
-        else:
-            # Función monótona → método tradicional (discos/arandelas)
-            from integrallab.core.solids import calculate_disc_volume, calculate_washer_volume
-            volume = calculate_disc_volume(f_expr, x_sym, a_val, b_val) if monotonicity_issues is None else 0.0
-            steps = [f"Método de discos usado: f(x) es monótona en [{a_val:.2f}, {b_val:.2f}]."]
-        
-        return float(volume.evalf() if volume.is_number else volume), steps
-        
-    except Exception as e:
-        # Fallback a integración numérica si falla todo
-        from scipy import integrate as scipy_integrate
-        
-        try:
-            f_py = lambdify(x_sym, f_expr)
-            vol_numeric, _ = scipy_integrate.quad(f_py, a_val, b_val)
-            return float(vol_numeric), [f"Método híbrido de integración numérica aplicado: volumen ≈ {vol_numeric:.6f}."]
-        except Exception as e2:
-            return 0.0, [f"Error en integración por franjas: {e2}"]
+            if abs(float(sympy.N(cand)) - value) < 1e-9 * max(1.0, abs(value)):
+                return sympy.nsimplify(cand) if cand.is_Float else sympy.simplify(cand)
+        except (TypeError, ValueError):
+            continue
+    exact = sympy.nsimplify(value, [sympy.pi], tolerance=1e-10)
+    return exact if abs(float(exact) - value) < 1e-10 * max(1.0, abs(value)) else sympy.Float(value, 15)
 
 
-def _check_monotonicity(f_func, a: float, b: float) -> Tuple[bool, Optional[str]]:
-    """Verifica si función es monótona en [a,b]."""
-    try:
-        from scipy import integrate as scipy_integrate
-        
-        # Derivada numérica para verificar monotonicidad
-        points = _sample_interval(a, b)
-        
-        is_monotonic_inc = all(
-            f_func(points[i+1]) >= f_func(points[i]) - 1e-6
-            for i in range(len(points)-1)
-        )
-        
-        is_monotonic_dec = all(
-            f_func(points[i]) >= f_func(points[i+1]) - 1e-6
-            for i in range(len(points)-1)
-        )
-        
-        if is_monotonic_inc:
-            return True, None
-        elif is_monotonic_dec:
-            return True, None
-        else:
-            # No monótona
-            return False, "Función no monótona"
-            
-    except Exception:
-        return False, "Error verificando monotonicidad"
-
-
-def _sample_interval(a: float, b: float) -> List[float]:
-    """Muestra puntos equidistantes en [a,b]."""
-    n = 100
-    return [a + (b - a) * i / (n - 1) for i in range(n)]
-
-
-def _integrate_by_horizontal_franches(
-    f_expr, x_sym: Symbol, a_val: float, b_val: float, num_subdivisions: int = 20,
-) -> Tuple[object, List[str]]:
-    """
-    Integra por franjas horizontales para funciones no monótonas.
-
-    Estrategia:
-      - Dividir [a,b] en subintervalos donde f(x) es continua.
-      - Para cada subintervalo, integrar respecto a y (inversión de roles).
-      
-    Retorna volumen total como suma algebraica.
-    """
-    steps = []
-    f_num = lambdify(x_sym, f_expr)
-    
-    # Verificar continuidad
-    is_continuous, discontinuities = _check_continuity(f_num, a_val, b_val)
-    
-    if not is_continuous:
-        # Función con discontinuidades → integrar por subintervalos
-        volume_total = 0.0
-        steps.append(f"Función tiene discontinuidades en {discontinuities}. Integración por subintervalos.")
-        
-        # Dividir intervalo según discontinuidades
-        intervals = _split_intervals(a_val, b_val, discontinuities)
-        
-        for i, (interval_a, interval_b) in enumerate(intervals):
-            vol_sub, sub_steps = integrate_by_franches_in_subinterval(
-                f_expr, x_sym, interval_a, interval_b, num_subdivisions
-            )
-            volume_total += vol_sub if isinstance(vol_sub, float) else 0.0
-            steps.extend(sub_steps)
-        
-        return volume_total, steps
-    
-    # Función continua → integración estándar con corrección de radio interno
-    try:
-        # Integración tradicional pero asegurando que usamos método híbrido si es necesario
-        from integrallab.core.operations import integrate_indefinite
-        
-        # Intentar integral indefinida primero (más rápida)
-        try:
-            indefinite = integrate_indefinite(f_expr, x_sym)
-            if isinstance(indefinite, sympy.Expr):
-                volume_expr = indefinite.subs(x_sym, b_val) - indefinite.subs(x_sym, a_val)
-                return float(volume_expr.evalf()), [
-                    f"Integración indefinida seguida de evaluación numérica."
-                ]
-        except Exception:
-            pass
-        
-        # Si integral simbólica falla, usar integración numérica
-        from scipy import integrate as scipy_integrate
-        vol_numeric, _ = scipy_integrate.quad(f_num, a_val, b_val)
-        return float(vol_numeric), [f"Integración numérica aplicada directamente."]
-        
-    except Exception as e:
-        return 0.0, [f"Error en integración por franjas: {e}"]
-
-
-def _check_continuity(f_func, a: float, b: float) -> Tuple[bool, List[float]]:
-    """Verifica si función es continua en [a,b]."""
-    try:
-        from scipy import integrate as scipy_integrate
-        
-        # Evaluar en muchos puntos y buscar discontinuidades
-        points = _sample_interval(a, b)
-        
-        values = []
-        for i, x in enumerate(points):
+def _critical_values(
+    curves: list[sympy.Expr],
+    x: sympy.Symbol,
+    num_a: float,
+    num_b: float,
+    sym_a: sympy.Expr,
+    sym_b: sympy.Expr,
+    crossings: list[tuple[float, sympy.Expr]],
+) -> list[tuple[float, sympy.Expr]]:
+    """(valor numérico, valor exacto) de y en extremos, extremos locales y cruces."""
+    points: list[tuple[float, sympy.Expr]] = []
+    xs_exact: list[tuple[float, sympy.Expr]] = [(num_a, sym_a), (num_b, sym_b), *crossings]
+    for curve in curves:
+        deriv = sympy.diff(curve, x)
+        for approx in roots_by_sign_change(deriv, x, num_a, num_b):
+            exact_x = None
+            if sympy.count_ops(deriv) <= 40:
+                try:
+                    for sol in sympy.solve(sympy.Eq(deriv, 0), x):
+                        v = complex(sympy.N(sol))
+                        if abs(v.imag) < 1e-9 and abs(v.real - approx) < 1e-7:
+                            exact_x = sol
+                            break
+                except Exception:  # noqa: BLE001
+                    exact_x = None
+            xs_exact.append((approx, exact_x if exact_x is not None else sympy.Float(approx, 15)))
+    for curve in curves:
+        for xv, xe in xs_exact:
+            vals = sample(curve, x, np.array([xv]))
+            if vals is None or not np.isfinite(vals[0]):
+                continue
+            yv = float(vals[0])
+            if any(abs(yv - p) < 1e-9 * max(1.0, abs(yv)) for p, _ in points):
+                continue
             try:
-                y = f_func(x)
-                if math.isfinite(y):
-                    values.append((x, y))
+                ye = sympy.simplify(curve.subs(x, xe))
+            except Exception:  # noqa: BLE001
+                ye = sympy.Float(yv, 15)
+            points.append((yv, _exact(yv, [ye])))
+    points.sort(key=lambda item: item[0])
+    return points
+
+
+def _section(
+    f_vals: np.ndarray,
+    g_vals: np.ndarray,
+    xs: np.ndarray,
+    y: float,
+    f: sympy.Expr,
+    g: sympy.Expr,
+    x: sympy.Symbol,
+) -> list[tuple[tuple[str, float], tuple[str, float]]]:
+    """Intervalos de S(y) con el tipo de cada borde: ("a"|"b"|"f"|"g", x numérico)."""
+    hi = np.maximum(f_vals, g_vals)
+    lo = np.minimum(f_vals, g_vals)
+    tol = 1e-12 * max(1.0, abs(y))
+    inside = (lo <= y + tol) & (y - tol <= hi) & np.isfinite(hi) & np.isfinite(lo)
+    out: list[tuple[tuple[str, float], tuple[str, float]]] = []
+    n = len(xs)
+    i = 0
+    while i < n:
+        if not inside[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and inside[j + 1]:
+            j += 1
+        left = ("a", float(xs[0])) if i == 0 else _refine(f, g, f_vals, g_vals, xs, i - 1, i, y, x)
+        right = ("b", float(xs[-1])) if j == n - 1 else _refine(f, g, f_vals, g_vals, xs, j, j + 1, y, x)
+        if right[1] - left[1] > 1e-9:
+            out.append((left, right))
+        i = j + 1
+    return out
+
+
+def _refine(
+    f: sympy.Expr,
+    g: sympy.Expr,
+    f_vals: np.ndarray,
+    g_vals: np.ndarray,
+    xs: np.ndarray,
+    i: int,
+    j: int,
+    y: float,
+    x: sympy.Symbol,
+) -> tuple[str, float]:
+    """Qué curva cruza el nivel y entre xs[i] y xs[j], y dónde (bisección)."""
+    for name, expr, vals in (("f", f, f_vals), ("g", g, g_vals)):
+        a_v, b_v = vals[i] - y, vals[j] - y
+        if np.isfinite(a_v) and np.isfinite(b_v) and a_v * b_v <= 0:
+            lo, hi = float(xs[i]), float(xs[j])
+            for _ in range(70):
+                mid = 0.5 * (lo + hi)
+                mv = sample(expr, x, np.array([mid]))
+                if mv is None or not np.isfinite(mv[0]):
+                    break
+                if (mv[0] - y) * a_v <= 0:
+                    hi = mid
                 else:
-                    return False, [x]
-            except Exception:
-                return False, [x]
-        
-        # Verificar continuidad entre puntos adyacentes
-        discontinuities = []
-        for i in range(len(values) - 1):
-            x1, y1 = values[i]
-            x2, y2 = values[i + 1]
-            
-            try:
-                mid_x = (x1 + x2) / 2
-                if not math.isfinite(f_func(mid_x)):
-                    discontinuities.append(mid_x)
-            except Exception:
-                discontinuities.append(mid_x)
-        
-        return len(discontinuities) == 0, discontinuities
-        
-    except Exception:
-        return True, []
+                    lo, a_v = mid, mv[0] - y
+            return name, 0.5 * (lo + hi)
+    raise InversionFailed("No se pudo identificar el borde de una franja horizontal.")
 
 
-def _split_intervals(a: float, b: float, discontinuities: List[float]) -> List[Tuple[float, float]]:
-    """Divide intervalo [a,b] según puntos de discontinuidad."""
-    sorted_disc = sorted(set(discontinuities))
-    
-    intervals = [(a, sorted_disc[0])]
-    for d in sorted_disc[1:-1]:
-        intervals.append((d, d))  # Puntos infinitesimales para separar
-    
-    if len(sorted_disc) > 1:
-        intervals[-1] = (sorted_disc[-2], b)
-    
-    return intervals
+def _branch(curve: sympy.Expr, x: sympy.Symbol, y: sympy.Symbol, sols: list[sympy.Expr],
+            y_test: float, x_target: float) -> sympy.Expr | None:
+    best, best_err = None, float("inf")
+    for sol in sols:
+        try:
+            v = complex(sympy.N(sol.subs(y, y_test)))
+        except (TypeError, ValueError):
+            continue
+        if abs(v.imag) > 1e-8 * max(1.0, abs(v.real)):
+            continue
+        err = abs(v.real - x_target)
+        if err < best_err:
+            best, best_err = sol, err
+    return best if best is not None and best_err < 1e-6 * max(1.0, abs(x_target)) else None
 
 
-def integrate_by_franches_in_subinterval(
-    f_expr, x_sym: Symbol, a_val: float, b_val: float, num_subdivisions: int = 20,
-) -> Tuple[float, List[str]]:
-    """Integra franja horizontal en subintervalo específico."""
-    steps = [f"Integrando franjas horizontales en [{a_val:.4f}, {b_val:.4f}]."]
-    
-    try:
-        # Usar integración numérica con corrección de signo
-        f_num = lambdify(x_sym, f_expr)
-        
-        from scipy import integrate as scipy_integrate
-        
-        vol, _ = scipy_integrate.quad(f_num, a_val, b_val)
-        
-        # Verificar si volumen es negativo (problema de radio interno incorrecto)
-        if vol < 0 and b_val > a_val:
-            steps.append("⚠️  Volumen calculado negativo → posible error en fórmula de arandelas.")
-            return 0.0, steps
-        
-        return float(vol), steps
-        
-    except Exception as e:
-        steps.append(f"Error en subintervalo: {e}")
-        return 0.0, steps
+def _realify(branch: sympy.Expr, y: sympy.Symbol, y0: float, y1: float) -> sympy.Expr:
+    """Escribe sin unidades imaginarias una rama que es real en la franja.
+
+    ``solve(y = x³)`` da la raíz real de un y negativo como ``−y^(1/3)/2 + √3·i·y^(1/3)/2``
+    (rama principal compleja). Con ``y = −s`` y ``s > 0`` SymPy la simplifica a ``−s^(1/3)``,
+    es decir ``−(−y)^(1/3)``: la misma raíz real que dibuja la gráfica.
+    """
+    if not branch.has(sympy.I):
+        return branch
+    s = sympy.Symbol("s", positive=True)
+    sign = -1 if y1 <= 0 else 1 if y0 >= 0 else 0
+    if sign == 0:
+        return branch
+    candidate = sympy.simplify(sympy.expand_complex(branch.subs(y, sign * s)))
+    if candidate.has(sympy.I):
+        return branch
+    return candidate.subs(s, sign * y)
 
 
-def create_pedagogical_steps(
-    expr_str: str,
-    var_sym: str = "x", 
-    a_val: float = 0.0, 
-    b_val: float = 1.0,
-) -> List[str]:
-    """Genera lista de pasos explicativos para desarrollo pedagógico tipo Photomath."""
-    steps = [
-        f"[R(x)]²: Inversión por franjas horizontales detectada.",
-        f"Problema: La función {expr_str[:30]}... puede ser no monótona en [{a_val:.1f}, {b_val:.1f}].",
-        "Fórmula de discos tradicional: π ∫[R(x)]² dx",
-        "Problema con funciones no monótonas: R(x) tiene múltiples valores para un mismo y.",
-        "Solución A1: Usar franjas horizontales e integrar respecto a y primero.",
-        f"Volumen = Σ π ∫_{x_left}^{x_right} (y - y_lower) dy para cada franja horizontal",
-    ]
-    
-    return steps
+def horizontal_strips(
+    f: sympy.Expr,
+    g: sympy.Expr,
+    x: sympy.Symbol,
+    y: sympy.Symbol,
+    num_a: float,
+    num_b: float,
+    sym_a: sympy.Expr,
+    sym_b: sympy.Expr,
+    crossings: list[tuple[float, sympy.Expr]],
+) -> list[Strip]:
+    """Describe la región entre ``f`` y ``g`` en ``[a, b]`` por franjas horizontales.
 
+    Raises:
+        InversionFailed: si un borde curvo no se puede despejar de forma exacta o la región es
+            demasiado compleja (más de ``_MAX_STRIPS`` franjas).
+    """
+    xs = np.linspace(num_a, num_b, _GRID)
+    f_vals = sample(f, x, xs)
+    g_vals = sample(g, x, xs)
+    if f_vals is None or g_vals is None or not (np.all(np.isfinite(f_vals)) and np.all(np.isfinite(g_vals))):
+        raise InversionFailed("Las curvas no son reales y finitas en todo el intervalo.")
 
-if __name__ == "__main__":
-    # Demo rápida de corrección A1
-    from sympy import pi, sin
-    
-    expr = "sin(x)**2"
-    
-    print(f"=== Corrección A1: Integración por franjas ===")
-    print(f"Expresión: {expr}")
-    print()
-    
-    volume, steps = integrate_by_franches(expr, "x", 0.0, pi/2)
-    
-    print(f"Volumen calculado: {volume:.6f}")
-    print("Pasos:")
-    for step in steps:
-        print(f"  - {step}")
+    curves = [c for c in (f, g) if c.has(x)]
+    levels = _critical_values([f, g], x, num_a, num_b, sym_a, sym_b, crossings)
+    if len(levels) < 2:
+        raise InversionFailed("La región no tiene altura: no hay franjas horizontales.")
+
+    solutions: dict[str, list[sympy.Expr]] = {}
+    for name, curve in (("f", f), ("g", g)):
+        if curve not in curves:
+            continue
+        try:
+            solutions[name] = list(sympy.solve(sympy.Eq(y, curve), x))
+        except Exception as exc:  # noqa: BLE001
+            raise InversionFailed(f"No se pudo despejar {x} en y = {curve}: {exc}") from exc
+
+    strips: list[Strip] = []
+    for (y0n, y0e), (y1n, y1e) in zip(levels, levels[1:]):
+        if y1n - y0n < 1e-12:
+            continue
+        y_mid = 0.5 * (y0n + y1n)
+        section = _section(f_vals, g_vals, xs, y_mid, f, g, x)
+        if not section:
+            continue
+        intervals: list[tuple[Edge, Edge]] = []
+        for left, right in section:
+            edges = []
+            for kind, x_num in (left, right):
+                if kind in ("a", "b"):
+                    edges.append(Edge(kind, sym_a if kind == "a" else sym_b))
+                    continue
+                curve = f if kind == "f" else g
+                branch = _branch(curve, x, y, solutions.get(kind, []), y_mid, x_num)
+                if branch is None:
+                    raise InversionFailed(
+                        f"No se encontró una rama real de {x} en y = {sympy.sstr(curve)} para y ∈ "
+                        f"[{y0n:.4g}, {y1n:.4g}]."
+                    )
+                for frac in (0.25, 0.75):
+                    y_q = y0n + frac * (y1n - y0n)
+                    sec_q = _section(f_vals, g_vals, xs, y_q, f, g, x)
+                    xs_q = [e[1] for pair in sec_q for e in pair if e[0] == kind]
+                    v = complex(sympy.N(branch.subs(y, y_q)))
+                    if not xs_q or min(abs(v.real - xq) for xq in xs_q) > 1e-6 * max(1.0, abs(v.real)):
+                        raise InversionFailed("La rama despejada no describe toda la franja.")
+                edges.append(Edge(kind, _realify(sympy.simplify(branch), y, y0n, y1n)))
+            intervals.append((edges[0], edges[1]))
+        strip = Strip(y0n, y1n, y0e, y1e, tuple(intervals))
+        if strips and strips[-1].intervals == strip.intervals and abs(strips[-1].y1_num - y0n) < 1e-12:
+            prev = strips[-1]
+            strips[-1] = Strip(prev.y0_num, y1n, prev.y0, y1e, prev.intervals)
+        else:
+            strips.append(strip)
+    if not strips:
+        raise InversionFailed("No se encontraron franjas horizontales con área.")
+    if len(strips) > _MAX_STRIPS:
+        raise InversionFailed("La región necesita demasiadas franjas horizontales; use el método directo.")
+    return strips

@@ -2,7 +2,8 @@
 """Validación de API matemática y pruebas desincronizadas."""
 
 import sys
-sys.path.insert(0, 'C:/Users/merej/OneDrive/Desktop/Calculo')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # raíz del repositorio
 
 print("="*60)
 print("VALIDACIÓN DE EXPORTACIONES PÚBLICAS")

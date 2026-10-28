@@ -369,34 +369,132 @@ def _get_transformations() -> tuple:
 # Normalizador es-CO
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _replace_abs_bars(text: str) -> str:
-    """Reemplaza |expr| por Abs(expr) de manera balanceada."""
-    result: list[str] = []
-    i = 0
-    while i < len(text):
-        if text[i] == '|':
-            depth = 0
-            j = i + 1
-            while j < len(text):
-                if text[j] == '(':
-                    depth += 1
-                elif text[j] == ')':
-                    depth -= 1
-                elif text[j] == '|' and depth == 0:
-                    inner = text[i + 1:j]
-                    result.append('Abs(')
-                    result.append(inner)
-                    result.append(')')
-                    i = j + 1
-                    break
-                j += 1
-            else:
-                result.append(text[i])
-                i += 1
-        else:
-            result.append(text[i])
+# Alias en español (y alguno en inglés) → nombre de SymPy. Orden: más largo primero, para que
+# «arcsen» no se lea como «arc» + «sen».
+_ALIASES: tuple[tuple[str, str], ...] = (
+    ('arcsinh', 'asinh'),
+    ('arccosh', 'acosh'),
+    ('arctanh', 'atanh'),
+    ('arccoth', 'acoth'),
+    ('arcsen',  'asin'),
+    ('arcsin',  'asin'),
+    ('arccos',  'acos'),
+    ('arctan',  'atan'),
+    ('arctg',   'atan'),
+    ('arccot',  'acot'),
+    ('arccsc',  'acsc'),
+    ('arcsec',  'asec'),
+    ('cotan',   'cot'),
+    ('cotg',    'cot'),
+    ('ctg',     'cot'),
+    ('cosec',   'csc'),
+    ('senh',    'sinh'),
+    ('cosenh',  'cosh'),
+    ('tgh',     'tanh'),
+    ('ctgh',    'coth'),
+    ('sen',     'sin'),
+    ('tg',      'tan'),
+    ('raiz',    'sqrt'),
+    ('ln',      'log'),
+)
+_NOT_FUNCTIONS = frozenset({"pi", "E", "e", "I", "oo", "inf", "zoo", "nan"})
+
+
+def _function_names() -> frozenset[str]:
+    names = {k for k in _SAFE_LOCAL_DICT if k not in _NOT_FUNCTIONS}
+    names.update(es for es, _en in _ALIASES)
+    return frozenset(names)
+
+
+_FUNCTION_NAMES = _function_names()
+_GLUE_TOKENS = tuple(sorted({*_FUNCTION_NAMES, "x", "y", "pi", "e", "E"}, key=len, reverse=True))
+
+
+def _split_glued_names(text: str) -> str:
+    """Separa nombres pegados que el estudiante escribe sin espacio: ``sinx`` → ``sin x``,
+    ``xsin(x)`` → ``x sin(x)``, ``lnx`` → ``ln x``, ``pix`` → ``pi x``.
+
+    Antes ``sinx`` se leía como i·n·s·x y el error hablaba de «símbolos sin valor: i, n, s»
+    (hallazgo M5). Solo se separa una palabra que se pueda escribir entera con funciones
+    conocidas, x, y, pi y e; cualquier otra se deja igual (y la rechaza la validación).
+    """
+    def split(word: str) -> list[str] | None:
+        best: list[list[str] | None] = [None] * (len(word) + 1)
+        best[0] = []
+        for i in range(len(word)):
+            if best[i] is None:
+                continue
+            for token in _GLUE_TOKENS:
+                if word.startswith(token, i):
+                    cand = [*best[i], token]  # type: ignore[misc]
+                    j = i + len(token)
+                    if best[j] is None or len(cand) < len(best[j]):  # type: ignore[arg-type]
+                        best[j] = cand
+        return best[len(word)]
+
+    def repl(match: re.Match[str]) -> str:
+        word = match.group(0)
+        if word in _SAFE_LOCAL_DICT or word in _FUNCTION_NAMES or len(word) < 2:
+            return word
+        parts = split(word)
+        if not parts or len(parts) < 2:
+            return word
+        # «sinxcosx»: cada función toma la variable que la sigue, salvo la última pareja, que se
+        # deja con espacio para que «sinx^2» siga siendo sin(x²) como en la calculadora.
+        out: list[str] = []
+        i = 0
+        while i < len(parts):
+            part = parts[i]
+            has_arg = i + 1 < len(parts) and parts[i + 1] in ("x", "y", "pi", "e", "E")
+            if part in _FUNCTION_NAMES and has_arg and i + 2 < len(parts):
+                out.append(f"{part}({parts[i + 1]})")
+                i += 2
+                continue
+            out.append(part)
             i += 1
-    return ''.join(result)
+        return " ".join(out)
+
+    return re.sub(r"(?<![A-Za-z_])[A-Za-z]+", repl, text)
+
+
+def _replace_abs_bars(text: str) -> str:
+    """Reemplaza ``|expr|`` por ``Abs(expr)``, también anidados y pegados a una función.
+
+    Una barra abre si no hay ninguna abierta o si la precede un operador, un paréntesis que
+    abre u otra barra que abre; si no, cierra la última abierta. Así ``||x| - 1|`` es
+    ``Abs(Abs(x) - 1)`` y ``|x|·|y|`` son dos valores absolutos. Tras el nombre de una función
+    (``ln|x|``) se escribe ``ln(Abs(x))``: antes quedaba ``lnAbs(x)`` y se rechazaba.
+    """
+    out: list[str] = []
+    stack: list[tuple[int, bool]] = []  # (profundidad de paréntesis, cerrar con «))»)
+    depth = 0
+    prev = ""        # último carácter significativo emitido
+    prev_open = False
+    for ch in text:
+        if ch == "|":
+            opening = not stack or prev in ("", "+", "-", "*", "/", "^", "(", ",") or prev_open
+            if not opening and stack[-1][0] != depth:
+                opening = True
+            if opening:
+                head = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", "".join(out[-40:]))
+                wrap = bool(head) and head.group(1) in _FUNCTION_NAMES
+                out.append("(Abs(" if wrap else ("*Abs(" if prev and (prev.isalnum() or prev in ")_.") else "Abs("))
+                stack.append((depth, wrap))
+                prev, prev_open = "(", True
+            else:
+                _d, wrap = stack.pop()
+                out.append("))" if wrap else ")")
+                prev, prev_open = ")", False
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        out.append(ch)
+        if not ch.isspace():
+            prev, prev_open = ch, False
+    out.extend("))" if wrap else ")" for _d, wrap in reversed(stack))  # barras sin cerrar
+    return "".join(out)
 
 
 def _replace_log_base(text: str, placeholder: str, base: int) -> str:
@@ -479,6 +577,9 @@ def _normalize_expression(text: str) -> str:
     # 2. Superíndices
     s = s.replace('²', '**2').replace('³', '**3')
 
+    # 2b. Nombres pegados: sinx → sin x, xsin(x) → x sin(x) (hallazgo M5)
+    s = _split_glued_names(s)
+
     # 3. Constante de Euler: e aislada (no dentro de otra palabra como sec, exp)
     s = re.sub(r'\be\b', 'E', s)
 
@@ -497,34 +598,12 @@ def _normalize_expression(text: str) -> str:
     s = re.sub(r'\blog2\s*\(', r'_ph_log2(', s)
 
     # 8. Aliases en español e inglés extendidos (orden: más largo primero)
-    aliases = [
-        ('arcsinh', 'asinh'),
-        ('arccosh', 'acosh'),
-        ('arctanh', 'atanh'),
-        ('arccoth', 'acoth'),
-        ('arcsen',  'asin'),
-        ('arcsin',  'asin'),
-        ('arccos',  'acos'),
-        ('arctan',  'atan'),
-        ('arctg',   'atan'),
-        ('arccot',  'acot'),
-        ('arccsc',  'acsc'),
-        ('arcsec',  'asec'),
-        ('cotan',   'cot'),
-        ('cotg',    'cot'),
-        ('ctg',     'cot'),
-        ('cosec',   'csc'),
-        ('senh',    'sinh'),
-        ('cosenh',  'cosh'),
-        ('tgh',     'tanh'),
-        ('ctgh',    'coth'),
-        ('sen',     'sin'),
-        ('tg',      'tan'),
-        ('raiz',    'sqrt'),
-        ('ln',      'log'),
-    ]
-    for es, en in aliases:
+    for es, en in _ALIASES:
         s = re.sub(r'\b' + re.escape(es) + r'\b', en, s)
+
+    # 9. Variable seguida de paréntesis: x(x + 1) es un producto, no una función llamada x.
+    #    Antes SymPy lo leía como aplicación y fallaba con «name 'Function' is not defined».
+    s = re.sub(r'(?<![A-Za-z_])([xy])\s*\(', r'\1*(', s)
 
     # Reemplazar placeholders de log10 y log2
     s = _replace_log_base(s, '_ph_log10', 10)

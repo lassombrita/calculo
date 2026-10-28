@@ -140,3 +140,54 @@
 
 **Resultado:** documentación limpiada (detalle en `docs/PRIVACIDAD.md`, sin repetir los valores); prueba automática; guía para los metadatos de Git y el historial, que la limpieza de archivos no alcanza.
 
+
+---
+
+## D8 — Desglose paso a paso como árbol de `StepNode` con MathJax sin conexión
+
+**Fecha:** 2026-10-27
+**Decisión:** El dominio produce, junto a la lista de 7 pasos, un árbol de `StepNode` (`integrallab/core/steps/`) cuyas fórmulas marcan con `\class{step-ID}{…}` cada subexpresión que tiene su propio desarrollo. La interfaz lo muestra en un `QWebEngineView` con MathJax 3.2.2 (salida SVG, empaquetado en `resources/mathjax/`) y `QWebChannel`; tocar una parte marcada despliega su paso debajo. Las reglas de integración salen de `sympy.integrals.manualintegrate.integral_steps`.
+
+**Contexto:** La pestaña Desarrollo era un `QTextEdit` con imágenes PNG de MathText: ninguna parte de una fórmula respondía al clic, el modelo era una lista de cadenas y el paso «Técnica de integración» era una heurística que acertaba 4 de 11 integrandos de prueba. Un intento previo de otra herramienta (`core/steps/step_tree.py`, `ui/views/steps_view.py`, `ui/photomath/`) no llegó a importar.
+
+**Alternativas consideradas:**
+
+| Alternativa | Razón para descartar |
+|---|---|
+| `QTextBrowser` con enlaces sobre imágenes PNG | Un PNG no permite saber qué parte de la fórmula se tocó; habría que recortar imágenes por subexpresión. |
+| Detectar regiones clicables en el SVG por coordenadas | Frágil: depende de la tipografía y del tamaño; `\class` lo resuelve en el propio LaTeX. |
+| KaTeX | No tiene un equivalente fiable de `\class` en su salida HTML para anidar anclas; MathJax sí (extensión `html`). |
+| Buscar y reemplazar texto en el LaTeX de SymPy | Se rompe con el orden de términos y los paréntesis; el impresor propio marca por el árbol de la expresión. |
+| Generar los pasos con plantillas | Es lo que había; no registra qué regla se aplicó realmente. |
+
+**Resultado:** desglose de 12 a 46 nodos por volumen en las pruebas; la vista imprimible (y el PDF) se conserva. Detalle en `docs/DESGLOSE_INTERACTIVO.md`.
+
+---
+
+## D9 — Volúmenes por tramos de signo constante, inversión por franjas y red de seguridad
+
+**Fecha:** 2026-10-27
+**Decisión:** (1) Los radios y alturas se escriben sin valor absoluto: el intervalo se parte donde cambia el signo de una distancia al eje, de un `|u|` o de la base de una raíz impar, y en cada tramo se usa `f − k` o `k − f`, `x − h` o `h − x`, y la rama real de `∛u` (`core/volume/pieces.py`). (2) La integración en `dy` describe la región por franjas horizontales con sus bordes reales en lugar de suponer que va de `x = 0` a `x = f⁻¹(y)` (`core/volume/inversion.py`). (3) Todo volumen se contrasta con la cuadratura independiente `numeric_volume`: estricta (1e-5) para la inversión, solo diferencias groseras (1e-3) para los métodos directos.
+
+**Contexto:** `Abs(x − h)` con un símbolo sin supuestos dejaba `Integral(x²·|x|, x)` y `exp(re(x))` en el desarrollo (7 de 8 casos de prueba); `_clean_latex` ocultaba los `Abs` convirtiéndolos en paréntesis, con radios negativos a la vista; la inversión calculaba otra región en 9 de 12 casos (contenida desde el 2026-10-26 por la red de seguridad, que los rechazaba).
+
+**Alternativas consideradas:**
+
+| Alternativa | Razón para descartar |
+|---|---|
+| Símbolos `real=True` en todo el dominio | El parser crea `Symbol("x")` sin supuestos; mezclarlos rompe `diff` y `subs` (se probó: la derivada daba 0). Exigiría cambiar el parser y todas las rutas a la vez. |
+| `sign(u)·|u|^(p/q)` para las raíces impares en el desarrollo | Correcto numéricamente, pero deja `sign` y `Abs` en la primitiva que lee el estudiante. Se usa solo para la cuadratura (`real_root_form`). |
+| Invertir solo funciones monótonas | Rechaza casos de libro (4 − x² en [1, 2], √x vs x) y no corrige la región supuesta. |
+
+**Resultado:** los 11 casos de inversión coinciden con su forma cerrada y con la cuadratura; ningún desarrollo de la batería contiene `Integral(` ni `re(`; `cbrt(x)` en [−1, 1] tiene integral 0, área 3/2 y volumen 6π/5.
+
+---
+
+## D10 — El código heredado sin uso se retira en un parche aparte
+
+**Fecha:** 2026-10-27
+**Decisión:** El parche principal corrige y añade; no borra archivos (salvo los tres de `core/steps/` que reemplaza). Los módulos sin uso y en parte no importables (`core/domain/`, `core/migration.py`, `core/mesh.py`, `core/volume/calculation.py`, `core/volume/meshing/`, `legacy_compat/`, `ui/photomath/`, `ui/controllers/`, `resources/js/qwebchannel_bridge.js`, `integrallab/tests/`, `scratch/`, dos scripts y los informes de la raíz) se retiran en `integrallab-limpieza.patch`, que el autor decide si aplica.
+
+**Contexto:** `AGENTS.md` (sección 3) prohíbe borrar archivos sin confirmación. Esos módulos no se usan, pero confunden a cualquier lector humano o de IA, y los informes de la raíz afirman funciones que no existen.
+
+**Resultado:** dos parches independientes; el principal deja la suite en verde por sí solo.

@@ -1,5 +1,5 @@
 from integrallab.ui.theme import apply_theme
-from integrallab.ui.views.main_window import MainWindow
+from integrallab.ui.main_window import MainWindow
 from pathlib import Path
 import sys
 

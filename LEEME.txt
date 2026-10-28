@@ -1,0 +1,27 @@
+Documentación de IntegralLab
+Generada el 2026-10-27.
+
+Orden de lectura: README.md, AGENTS.md, docs/README.md (índice de la documentación).
+
+README.md
+AGENTS.md
+COPYRIGHT.md
+LICENSE
+THIRD_PARTY_NOTICES.md
+docs/README.md
+docs/ARQUITECTURA.md
+docs/AUDITORIA_2026-10-24.md
+docs/AUDITORIA_2026-10-27.md
+docs/DESGLOSE_INTERACTIVO.md
+docs/EDITOR_VISUAL.md
+docs/PRIVACIDAD.md
+docs/PROJECT_STATUS.md
+docs/PRUEBAS_PROTOTIPO_THREEJS.md
+docs/SESSION_LOG.md
+docs/TECHNICAL_DECISIONS.md
+docs/img/desglose-interactivo.png
+docs/img/editor-visual.png
+docs/archive/AUDITORIA_VIZUALIZACION_3D.md
+docs/archive/CORRECCIONES_FASE_12.md
+docs/archive/EVALUACION_TECNICA_THREEJS.md
+docs/archive/INFORME_EJECUTIVO_THREEJS.md

@@ -179,3 +179,36 @@ def test_comma_separated_number_list_is_rejected() -> None:
     """'1,2,3' ya no produce un valor sin sentido (0.36): es una expresión inválida."""
     with pytest.raises(ExpressionParseError):
         parse_math_expression("1,2,3")
+
+
+# ── Entradas comunes de estudiantes (hallazgo M5) ───────────────────────────
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("x(x+1)", "x*(x + 1)"),          # antes: «name 'Function' is not defined»
+        ("2x(x+1)", "2*x*(x + 1)"),
+        ("ln|x|", "log(Abs(x))"),         # antes: «función no reconocida lnAbs()»
+        ("||x|-1|", "Abs(Abs(x) - 1)"),   # antes: «función no reconocida xAbs()»
+        ("|x|*|y|", "Abs(x)*Abs(y)"),
+        ("2|x-1|", "2*Abs(x - 1)"),
+        ("sinx", "sin(x)"),               # antes: i*n*s*x
+        ("senx", "sin(x)"),
+        ("xsin(x)", "x*sin(x)"),          # antes: «función no reconocida xsin()»
+        ("sinxcosx", "sin(x)*cos(x)"),
+        ("2sinxcosx", "2*sin(x)*cos(x)"),
+        ("sinx^2", "sin(x**2)"),          # como en la calculadora: sin x² = sin(x²)
+        ("lnx", "log(x)"),
+        ("factorial(5)", "120"),
+        ("exp(x)", "exp(x)"),             # nombres conocidos no se separan
+        ("sec(x)", "sec(x)"),
+        ("log10(x)", "log(x)/log(10)"),
+    ],
+)
+def test_student_inputs_are_understood(text: str, expected: str) -> None:
+    assert parse_math_expression(text).plain_text == expected
+
+
+def test_unknown_glued_words_are_still_rejected() -> None:
+    with pytest.raises(ExpressionParseError):
+        parse_math_expression("foo(x)")

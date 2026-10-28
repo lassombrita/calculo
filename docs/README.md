@@ -7,8 +7,8 @@
 1. [`../AGENTS.md`](../AGENTS.md): reglas de arquitectura, de trabajo, de seguridad, de privacidad y de autoría. Obligatorio antes de cambiar código.
 2. [`ARQUITECTURA.md`](ARQUITECTURA.md): capas, módulos, modelo de procesos y flujo de un cálculo.
 3. [`PROJECT_STATUS.md`](PROJECT_STATUS.md): qué está hecho, qué falta y la siguiente tarea.
-4. [`AUDITORIA_2026-10-24.md`](AUDITORIA_2026-10-24.md): bugs conocidos (A1–A8, M1–M13) y el plan para corregirlos. Léala antes de tocar `core/solids.py`, el parser, los deslizadores o los reportes.
-5. [`TECHNICAL_DECISIONS.md`](TECHNICAL_DECISIONS.md): por qué el proyecto es como es (D1–D7).
+4. [`AUDITORIA_2026-10-27.md`](AUDITORIA_2026-10-27.md): estado de cada archivo, validación matemática, desglose interactivo y plan de acción. Léala antes de tocar `core/solids.py`, `core/volume/`, el parser, los deslizadores o los reportes. La auditoría anterior ([`AUDITORIA_2026-10-24.md`](AUDITORIA_2026-10-24.md), hallazgos A1–A8 y M1–M13) queda como referencia histórica.
+5. [`TECHNICAL_DECISIONS.md`](TECHNICAL_DECISIONS.md): por qué el proyecto es como es (D1–D10).
 6. Documentos de cada función, según la tarea (tabla siguiente).
 7. [`SESSION_LOG.md`](SESSION_LOG.md): historial de sesiones, solo si hace falta el contexto de un cambio antiguo.
 
@@ -24,7 +24,9 @@
 | [`PROJECT_STATUS.md`](PROJECT_STATUS.md) | Estado por fases y pendientes | Al terminar cada sesión |
 | [`SESSION_LOG.md`](SESSION_LOG.md) | Registro de sesiones (solo se anexa) | Al terminar cada sesión |
 | [`TECHNICAL_DECISIONS.md`](TECHNICAL_DECISIONS.md) | Decisiones de diseño (solo se anexa) | Al tomar una decisión de arquitectura |
-| [`AUDITORIA_2026-10-24.md`](AUDITORIA_2026-10-24.md) | Auditoría técnica completa y plan de acción | Al corregir un hallazgo, anotarlo en `PROJECT_STATUS.md` |
+| [`AUDITORIA_2026-10-27.md`](AUDITORIA_2026-10-27.md) | Auditoría archivo por archivo, validación matemática, desglose interactivo y plan | Al corregir un hallazgo, anotarlo en `PROJECT_STATUS.md` |
+| [`AUDITORIA_2026-10-24.md`](AUDITORIA_2026-10-24.md) | Auditoría anterior (A1–A8, M1–M13) | Histórico, no se edita |
+| [`DESGLOSE_INTERACTIVO.md`](DESGLOSE_INTERACTIVO.md) | Desglose paso a paso «estilo Photomath»: uso, árbol de pasos, vista, página y pruebas | Al cambiar `core/steps/`, `ui/views/steps_view.py` o `resources/steps/`, o al actualizar MathJax |
 | [`EDITOR_VISUAL.md`](EDITOR_VISUAL.md) | Editor visual de fórmulas: uso, diseño, pruebas y mantenimiento | Al cambiar el editor o actualizar MathLive |
 | [`PRIVACIDAD.md`](PRIVACIDAD.md) | Qué datos no entran al repositorio y cómo se comprueba | Al cambiar las reglas de privacidad |
 | [`PRUEBAS_PROTOTIPO_THREEJS.md`](PRUEBAS_PROTOTIPO_THREEJS.md) | Pruebas del prototipo del visor Three.js | Histórico |
@@ -37,4 +39,5 @@
 - Rutas siempre relativas a la raíz del repositorio (`integrallab/core/parser.py`), nunca absolutas.
 - Sin datos personales: solo el nombre del autor en los avisos de autoría (ver [`PRIVACIDAD.md`](PRIVACIDAD.md)). `tests/test_privacy.py` lo comprueba.
 - Las cifras de pruebas y versiones se toman de una ejecución real de `pytest`, con su fecha.
+- No se crean informes de estado en la raíz del repositorio (`RESUMEN_*.md`, `MIGRACION_*.md`…): el estado va en `PROJECT_STATUS.md`. Los informes de la raíz anteriores al 2026-10-27 contienen afirmaciones que el código no cumple (ver la auditoría, hallazgo N2).
 - Los documentos marcados «solo se anexa» no se reescriben: se añaden entradas al final.

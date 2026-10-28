@@ -386,8 +386,12 @@
                     }
                 }
 
-                if (data.fit_camera !== false) fitCameraToObject(solidGroup);
-                controls.autoRotate = prefs.autoRotate;
+                // Un sólido nuevo encuadra la cámara y retoma el giro automático; un cuadro de un
+                // deslizador (fit_camera: false) conserva la cámara y no vuelve a girar la vista.
+                if (data.fit_camera !== false) {
+                    fitCameraToObject(solidGroup);
+                    controls.autoRotate = prefs.autoRotate;
+                }
                 requestRender();
             }
 

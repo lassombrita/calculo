@@ -12,9 +12,11 @@ Responsabilidad:
 
 from __future__ import annotations
 
+import logging
+import math
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-import math
 from typing import Callable, Sequence
 
 import numpy as np
@@ -29,6 +31,20 @@ except ImportError:  # pragma: no cover
 from integrallab.core.adaptive import equidistributed_nodes
 from integrallab.core.parser import ParsedExpression, parse_math_expression
 from integrallab.core.sampling import REAL_EVAL_MODULES, prepare_expr_for_real_eval
+from integrallab.core.steps import (
+    IdGenerator,
+    RadiusInfo,
+    StepNode,
+    antiderivative,
+    build_volume_tree,
+    describe_technique,
+)
+from integrallab.core.steps import Piece as StepPiece
+from integrallab.core.steps import latex as step_latex
+from integrallab.core.volume.inversion import InversionFailed, Strip, horizontal_strips
+from integrallab.core.volume.pieces import real_branch, real_root_form, sign_cut_points, sign_on
+
+logger = logging.getLogger(__name__)
 
 
 class AxisOrientation(str, Enum):
@@ -138,8 +154,10 @@ class VolumeResult:
         integral_setup_latex: Expresión completa de la integral planteada en LaTeX.
         is_success: True si el cálculo concluyó sin errores.
         error_message: Detalle del error en caso de fallo.
-        steps: Lista ordenada de pasos analíticos de resolución.
+        steps: Lista ordenada de pasos analíticos de resolución (vista imprimible).
         warnings: Advertencias sobre cruces de curvas que pueden afectar el resultado.
+        step_tree: Árbol del desglose interactivo (``integrallab.core.steps``); ``None`` si no
+            se pudo construir. Cada fórmula marca con ``\\class{step-ID}`` las partes clicables.
     """
 
     method: SolidMethod
@@ -153,6 +171,7 @@ class VolumeResult:
     error_message: str | None = None
     steps: list[SolutionStep] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    step_tree: StepNode | None = None
 
 
 @dataclass(frozen=True)
@@ -307,112 +326,6 @@ def invert_symbolic_expression(
     return best_sol if best_sol is not None else sols[0]
 
 
-def invert_region_to_variable(
-    region: Region2D,
-    target_var: str = "y",
-) -> tuple[Region2D, str, str]:
-    """Transforma una región plana acotada invirtiendo la variable independiente (ej. x -> y).
-
-    Returns:
-        tuple[Region2D, str, str]: (nueva_region, explicacion_texto, explicacion_latex)
-    """
-    if region.variable == target_var:
-        return region, "", ""
-
-    f_parsed = _ensure_parsed(region.f_expr)
-    g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
-    num_a, num_b, _, _ = _evaluate_bounds(region.a, region.b)
-
-    from_sym = sympy.Symbol(region.variable)
-    to_sym = sympy.Symbol(target_var)
-
-    f_inv = invert_symbolic_expression(f_parsed.sympy_expr, from_sym, to_sym, num_a, num_b)
-
-    f_a = float(f_parsed.sympy_expr.subs(from_sym, num_a).evalf())
-    f_b = float(f_parsed.sympy_expr.subs(from_sym, num_b).evalf())
-
-    c_num = min(f_a, f_b)
-    d_num = max(f_a, f_b)
-
-    has_g = region.g_expr is not None and g_parsed.sympy_expr != 0
-    if has_g:
-        g_inv = invert_symbolic_expression(g_parsed.sympy_expr, from_sym, to_sym, num_a, num_b)
-        g_a = float(g_parsed.sympy_expr.subs(from_sym, num_a).evalf())
-        g_b = float(g_parsed.sympy_expr.subs(from_sym, num_b).evalf())
-        c_num = min(c_num, g_a, g_b)
-        d_num = max(d_num, g_a, g_b)
-        new_f_expr = str(f_inv)
-        new_g_expr = str(g_inv)
-        expl_text = (
-            f"Despeje analítico: {region.variable} en función de {target_var}.\n"
-            f"Curva 1: {target_var} = {f_parsed.plain_text}  ==>  {region.variable} = {f_inv}\n"
-            f"Curva 2: {target_var} = {g_parsed.plain_text}  ==>  {region.variable} = {g_inv}\n"
-            f"Límites en {target_var}: [{c_num:.4g}, {d_num:.4g}]."
-        )
-        expl_latex = (
-            f"\\text{{Despeje: }} {sympy.latex(from_sym)} = {sympy.latex(f_inv)}"
-            f" \\quad \\text{{y}} \\quad {sympy.latex(from_sym)} = {sympy.latex(g_inv)}"
-        )
-    else:
-        # Rama sin curva g: la región bajo f(x) en [a,b].
-        # Al integrar en dy la región queda entre x=0 (eje) y x=f_inv(y).
-        # Verificar monotonía para dar un mensaje claro si falla.
-        try:
-            f_deriv = sympy.diff(f_parsed.sympy_expr, from_sym)
-            test_pts = [num_a + (num_b - num_a) * t for t in (0.1, 0.3, 0.5, 0.7, 0.9)]
-            signs = []
-            for tp in test_pts:
-                try:
-                    dv = float(f_deriv.subs(from_sym, tp).evalf())
-                    signs.append(dv)
-                except Exception:
-                    pass
-            if signs and not (all(v >= 0 for v in signs) or all(v <= 0 for v in signs)):
-                raise InversionError(
-                    f"La función {f_parsed.plain_text} no es monótona en [{num_a:.4g}, {num_b:.4g}]. "
-                    "La inversión a dy no es posible de forma directa. "
-                    "Usa el método de Casquillos (shells) en su lugar."
-                )
-        except InversionError:
-            raise
-        except Exception:
-            pass  # No bloquear si la derivada falla; continuar con la inversión
-
-        new_f_expr = str(f_inv)
-        new_g_expr = "0"
-        expl_text = (
-            f"Despeje analítico: {region.variable} en función de {target_var}.\n"
-            f"Curva: {target_var} = {f_parsed.plain_text}  ==>  {region.variable} = {f_inv}\n"
-            f"La región queda entre {region.variable} = 0 (eje) y {region.variable} = {f_inv}.\n"
-            f"Límites en {target_var}: [{c_num:.4g}, {d_num:.4g}]."
-        )
-        expl_latex = (
-            f"\\text{{Despeje: }} {sympy.latex(from_sym)} = {sympy.latex(f_inv)}"
-            f", \\quad \\text{{región: }} 0 \\le {sympy.latex(from_sym)} \\le {sympy.latex(f_inv)}"
-        )
-
-    def _to_exact(v: float) -> sympy.Expr:
-        """Convierte un float a Rational exacto cuando sea posible, sin el hack :.6f."""
-        try:
-            # nsimplify busca la fracción exacta más cercana al float
-            exact = sympy.nsimplify(v, rational=True, tolerance=1e-9)
-            return exact
-        except Exception:
-            return sympy.Float(v)
-
-    a_sym = _to_exact(c_num)
-    b_sym = _to_exact(d_num)
-
-    new_region = Region2D(
-        f_expr=new_f_expr,
-        g_expr=new_g_expr,
-        a=a_sym,
-        b=b_sym,
-        variable=target_var,
-    )
-    return new_region, expl_text, expl_latex
-
-
 def inversion_is_cheap(region: Region2D) -> bool:
     """True si invertir la región es barato: f y g polinomios de grado ≤ 4 en la variable."""
     try:
@@ -432,14 +345,21 @@ def can_invert_for_method(
     axis: RevolutionAxis,
     method: SolidMethod,
 ) -> bool:
-    """Indica si un método incompatible directamente puede aplicarse mediante inversión analítica."""
+    """True si el método se aplica directamente o si la región se puede describir por franjas
+    horizontales con despejes exactos (ver ``integrallab.core.volume.inversion``)."""
     if is_method_compatible(method, axis, region.variable):
         return True
+    if region.variable != "x":
+        return False
     try:
-        target_var = "y" if region.variable == "x" else "x"
-        invert_region_to_variable(region, target_var=target_var)
+        f = _ensure_parsed(region.f_expr).sympy_expr
+        g = _ensure_parsed(region.g_expr, default_zero=True).sympy_expr
+        num_a, num_b, sym_a, sym_b = _evaluate_bounds(region.a, region.b)
+        x_sym = sympy.Symbol("x")
+        crossings = find_curve_crossings(f, g, x_sym, 0.0, num_a, num_b, method=SolidMethod.SHELLS)
+        horizontal_strips(f, g, x_sym, sympy.Symbol("y"), num_a, num_b, sym_a, sym_b, crossings)
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 - cualquier fallo significa «no invertible»
         return False
 
 
@@ -595,6 +515,38 @@ def _dominates(
         return True
 
 
+_SIGN_SAMPLES = 201
+
+
+def _signed_distance(
+    diff_expr: sympy.Expr,
+    var_sym: sympy.Symbol,
+    t0: float,
+    t1: float,
+) -> sympy.Expr:
+    """Distancia |diff_expr| escrita sin valor absoluto cuando el signo es constante en (t0, t1).
+
+    El eje nunca atraviesa la región (lo garantiza ``axis_crossing_error``), así que en la
+    mayoría de los ejercicios ``f − k`` y ``x − h`` conservan su signo: se devuelve ``diff_expr``
+    o ``−diff_expr``. Solo si el signo cambia dentro del tramo (p. ej. x³ en [−1, 1] sobre el
+    eje X) se conserva ``Abs``, porque entonces el valor absoluto forma parte del radio real.
+    """
+    if diff_expr == 0:
+        return sympy.Integer(0)
+    ts = np.linspace(t0, t1, _SIGN_SAMPLES)[1:-1]
+    vals = _sample_profile(diff_expr, var_sym, ts)
+    if vals is not None:
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            scale = max(1.0, float(np.max(np.abs(vals))))
+            tol = 1e-12 * scale
+            if np.all(vals >= -tol):
+                return diff_expr
+            if np.all(vals <= tol):
+                return -diff_expr  # SymPy reparte el −1: −(x − 2) se escribe 2 − x
+    return sympy.Abs(diff_expr)
+
+
 def _first_non_real(expr: sympy.Expr, var_sym: sympy.Symbol, num_a: float, num_b: float) -> float | None:
     """Abscisa interior donde ``expr`` deja de ser real en un tramo (≥ 3 muestras seguidas).
 
@@ -687,683 +639,6 @@ def _solve_interior_roots(
     return roots or approx
 
 
-def _order_curves_by_distance(
-    f_sym: sympy.Expr,
-    g_sym: sympy.Expr,
-    var_sym: sympy.Symbol,
-    axis_val: float,
-    num_a: float,
-    num_b: float,
-) -> tuple[sympy.Expr, sympy.Expr, bool, list[str]]:
-    """Ordena dos curvas en R_outer y R_inner según su distancia al eje de rotación.
-
-    Returns:
-        (r_outer_expr, r_inner_expr, has_inner_void, warnings)
-        donde warnings contiene mensajes de advertencia sobre cruces de curvas.
-    """
-    # Expresiones de distancia exacta respecto al eje
-    axis_sym = sympy.nsimplify(axis_val)
-    dist_f = sympy.Abs(f_sym - axis_sym)
-    dist_g = sympy.Abs(g_sym - axis_sym)
-
-    warnings: list[str] = []
-
-    # Función para evaluar distancia en un punto dado
-    def evaluate_distance(dist_expr, x_val):
-        try:
-            return float(dist_expr.subs(var_sym, x_val).evalf())
-        except Exception:
-            return None
-
-    # Probar si las distancias son iguales en el punto medio (curvas coincidentes)
-    mid_val = sympy.Rational(num_a + num_b, 2)
-    try:
-        val_f_mid = float(dist_f.subs(var_sym, mid_val).evalf())
-        val_g_mid = float(dist_g.subs(var_sym, mid_val).evalf())
-        
-        if abs(val_f_mid - val_g_mid) < 1e-9:
-            warnings.append(
-                f"Las curvas f({var_sym}) y g({var_sym}) se cruzan o coinciden en el punto medio "
-                f"x = {mid_val.evalf():.3f}. El volumen calculado es una aproximación; "
-                f"verifique la región geométrica."
-            )
-    except Exception:
-        pass
-
-    # Buscar cruces resolviendo dist_f(x) = dist_g(x)
-    # Esto equivale a |f - axis| = |g - axis|, que tiene dos posibles soluciones:
-    # 1. f - axis = g - axis => f = g (cruce de las curvas originales)
-    # 2. f - axis = -(g - axis) => f + g = 2*axis (cruce donde distancias son iguales)
-    
-    # Caso 1: f(x) = g(x). Solo cruces reales ESTRICTAMENTE interiores a (a, b):
-    # un cruce en un extremo del intervalo no divide la región (p. ej. y=x con g=0 en [0, 1]).
-    # El barrido numérico previo evita sympy.solve cuando no hay cruce (p. ej. sin²x·cos³x + 2
-    # tardaba ~36 s en recommend_method) y cuando f o g son un spline (Piecewise).
-    try:
-        for x_float in _solve_interior_roots(f_sym - g_sym, var_sym, num_a, num_b, (f_sym, g_sym)):
-            warnings.append(
-                f"¡ADVERTENCIA! Las curvas se cruzan en x = {x_float:.3f} dentro del "
-                f"intervalo [{num_a}, {num_b}]. La determinación de la curva exterior "
-                f"basada solo en el punto medio puede ser incorrecta. El volumen calculado "
-                f"asume que una curva es siempre exterior."
-            )
-    except Exception:
-        pass
-
-    # Caso 2: |f - axis| = |g - axis| donde distancias coinciden pero curvas no son iguales
-    if axis_val == 0:  # Eje estándar, simplificación
-        eq2 = sympy.Eq(f_sym - g_sym, 0)  # Ya cubierto en caso 1
-    else:
-        # Para distancias iguales: (f - axis)^2 = (g - axis)^2
-        try:
-            dist_equal_expr = sympy.expand((f_sym - axis_sym)**2) - sympy.expand((g_sym - axis_sym)**2)
-            crosses_dist_equal = _solve_interior_roots(
-                dist_equal_expr, var_sym, num_a, num_b, (f_sym, g_sym)
-            )
-
-            for x_float in crosses_dist_equal:
-                # Descartar las raíces que ya corresponden al caso f = g
-                dist_f_at_x = evaluate_distance(dist_f, x_float)
-                dist_g_at_x = evaluate_distance(dist_g, x_float)
-                if (
-                    dist_f_at_x is not None
-                    and dist_g_at_x is not None
-                    and abs(dist_f_at_x - dist_g_at_x) < 1e-9
-                    and abs(
-                        (evaluate_distance(f_sym, x_float) or 0.0)
-                        - (evaluate_distance(g_sym, x_float) or 0.0)
-                    ) < 1e-9
-                ):
-                    continue
-                warnings.append(
-                    f"¡ADVERTENCIA! Las curvas tienen igual distancia al eje en "
-                    f"x = {x_float:.3f} dentro del intervalo [{num_a}, {num_b}]. "
-                    f"La región podría estar autointerseccionada."
-                )
-        except Exception:
-            pass
-
-    # Curva exterior: la que está más lejos del eje en la mayoría de las muestras interiores
-    # (no solo en el punto medio, que puede ser una singularidad evitable).
-    if _dominates(dist_f, dist_g, var_sym, num_a, num_b):
-        r_outer_dist = dist_f
-        r_inner_dist = dist_g
-    else:
-        r_outer_dist = dist_g
-        r_inner_dist = dist_f
-
-    # Comprobar si el radio interior es idénticamente cero
-    is_inner_zero = r_inner_dist.is_zero or r_inner_dist == 0
-    
-    return r_outer_dist, r_inner_dist, not is_inner_zero, warnings
-
-
-def _detect_integration_technique(
-    integrand: sympy.Expr,
-    var_sym: sympy.Symbol,
-) -> tuple[str, str, str]:
-    """Detecta y clasifica la técnica de integración más adecuada para el integrando dado.
-
-    Evalúa la estructura algebraica del integrando usando átomos y tipos de SymPy para
-    identificar si se requiere: regla de la potencia, sustitución simple, integración
-    por partes o sustitución trigonométrica.
-
-    Solo identifica radicales genuinos (sqrt de expresiones NO numéricas y NO simplificables
-    a entero) para evitar falsos positivos en polinomios con Abs() residuales.
-
-    Args:
-        integrand: Expresión del integrando (expandida o en forma canónica).
-        var_sym: Símbolo de la variable de integración.
-
-    Returns:
-        Tupla (título_del_paso, explicación_pedagógica, expresión_latex_del_método).
-    """
-    # Pre-proceso: expandir y limpiar Abs residuales para análisis limpio
-    try:
-        integrand_clean = sympy.expand(integrand)
-    except Exception:
-        integrand_clean = integrand
-
-    # 1. Detectar radicales cuadráticos GENUINOS (Pow con exp=1/2, base no numérica)
-    #    Filtra Abs(expr)^(1/2) que SymPy puede generar internamente como artefacto.
-    sqrt_atoms = []
-    for a in integrand_clean.atoms(sympy.Pow):
-        if a.exp != sympy.Rational(1, 2):
-            continue
-        if not a.base.has(var_sym):
-            continue
-        if a.base.is_number:  # sqrt de constante → no cuenta
-            continue
-        # Excluir si la base es Abs(expr) — artefacto de _order_curves_by_distance
-        if isinstance(a.base, sympy.Abs):
-            continue
-        # Verificar que no simplifique a racional (ej. sqrt(4) = 2)
-        try:
-            simplified = sympy.sqrt(a.base)
-            if simplified.is_rational:
-                continue
-        except Exception:
-            pass
-        sqrt_atoms.append(a)
-
-    if sqrt_atoms:
-        title = "Técnica de integración: Sustitución trigonométrica"
-        explanation = (
-            "El integrando contiene un radical (raíz cuadrada) de una expresión en la variable. "
-            "Se analiza la forma del radicando para elegir el cambio de variable trigonométrico "
-            "que elimina el radical y convierte la integral en una resoluble directamente:"
-        )
-        latex = (
-            r"\sqrt{a^2 - u^2} \;\Rightarrow\; u = a\sin\theta"
-            r"\qquad"
-            r"\sqrt{a^2 + u^2} \;\Rightarrow\; u = a\tan\theta"
-            r"\qquad"
-            r"\sqrt{u^2 - a^2} \;\Rightarrow\; u = a\sec\theta"
-        )
-        return title, explanation, latex
-
-    # 2. Detectar funciones trigonométricas, exponenciales y logaritmos
-    trig_classes = (sympy.sin, sympy.cos, sympy.tan, sympy.cot, sympy.sec, sympy.csc)
-    trig_atoms = integrand_clean.atoms(*trig_classes)
-    exp_atoms = integrand_clean.atoms(sympy.exp)
-    log_atoms = integrand_clean.atoms(sympy.log)
-    is_product = isinstance(integrand_clean, sympy.Mul)
-
-    if trig_atoms or exp_atoms or log_atoms:
-        if is_product:
-            title = "Técnica de integración: Integración por partes"
-            explanation = (
-                "El integrando es un producto de una función polinomial y una función trascendente "
-                "(trigonométrica, exponencial o logarítmica). "
-                "Se aplica integración por partes siguiendo la regla mnemotécnica LIATE para elegir u y dv:"
-            )
-            latex = r"\int u \, dv = uv - \int v \, du"
-            return title, explanation, latex
-        else:
-            title = "Técnica de integración: Sustitución simple"
-            explanation = (
-                "El integrando contiene una función compuesta (trigonométrica o exponencial). "
-                "Se aplica el método de sustitución con el cambio de variable u = g(x):"
-            )
-            latex = (
-                r"\int f(g(x)) \cdot g'(x) \, dx = \int f(u) \, du"
-                r"\qquad \text{donde } u = g(x),\; du = g'(x)\,dx"
-            )
-            return title, explanation, latex
-
-    # 3. Potencias con base compuesta (cadena inversa → sustitución algebraica)
-    pow_compound = [
-        a for a in integrand_clean.atoms(sympy.Pow)
-        if a.exp not in (sympy.S.One, sympy.Rational(1, 2))
-        and not a.exp.is_negative
-        and a.base.has(var_sym)
-        and a.base != var_sym
-        and not a.base.is_number
-        and not isinstance(a.base, sympy.Abs)
-    ]
-    if pow_compound:
-        base_expr = pow_compound[0].base
-        deriv_base = sympy.diff(base_expr, var_sym)
-        title = "Técnica de integración: Sustitución simple"
-        explanation = (
-            "El integrando contiene una expresión compuesta elevada a una potencia (regla de la cadena inversa). "
-            f"Se aplica el cambio de variable u = {sympy.latex(base_expr)} para convertir la integral:"
-        )
-        latex = (
-            r"\int f(g(x)) \cdot g'(x) \, dx = \int f(u) \, du"
-            rf"\qquad \text{{donde }} u = {sympy.latex(base_expr)},\; du = {sympy.latex(deriv_base)}\,dx"
-        )
-        return title, explanation, latex
-
-    # 4. Caso general: polinomio / regla de la potencia
-    title = "Técnica de integración: Regla de la potencia"
-    explanation = (
-        "El integrando es un polinomio o una suma de monomios con potencias enteras de la variable. "
-        "Se aplica la regla de la potencia a cada término por separado:"
-    )
-    latex = r"\int x^n \, dx = \frac{x^{n+1}}{n+1} + C \qquad (n \neq -1)"
-    return title, explanation, latex
-
-
-def _clean_latex(s: object) -> str:
-    """Convierte una expresion SymPy o cadena LaTeX a string LaTeX limpio.
-
-    Acepta tanto str como objetos SymPy. Cuando recibe un objeto
-    SymPy lo convierte con sympy.latex() antes de aplicar las
-    transformaciones de presentacion.
-
-    Args:
-        s: Cadena LaTeX o expresion SymPy.
-
-    Returns:
-        Cadena LaTeX lista para presentacion pedagogica.
-    """
-    import re as _re
-    import sympy as _sp
-    if not isinstance(s, str):
-        try:
-            s_str: str = _sp.latex(s)
-        except Exception:
-            s_str = str(s)
-    else:
-        s_str = s
-    s_str = s_str.replace(r'\left|', r'\left(').replace(r'\right|', r'\right)')
-    s_str = _re.sub(r'\\operatorname\{Abs\}\\left\(', r'\\left(', s_str)
-    s_str = _re.sub(r'\\text\{Abs\}\(', r'(', s_str)
-    return s_str
-
-
-def _build_volume_steps(
-    method: SolidMethod,
-    region: Region2D,
-    axis: RevolutionAxis,
-    var_sym: sympy.Symbol,
-    sym_a: sympy.Expr,
-    sym_b: sympy.Expr,
-    integrand_core: sympy.Expr,
-    vol_sym: sympy.Expr,
-    num_val: float | None,
-    r_outer: sympy.Expr | None = None,
-    r_inner: sympy.Expr | None = None,
-    shell_radius: sympy.Expr | None = None,
-    shell_height: sympy.Expr | None = None,
-) -> list[SolutionStep]:
-    """Construye la lista pedagógica de pasos analíticos intermedios con explicaciones didácticas."""
-    try:
-        var = region.variable
-        integrand_core_expanded = sympy.expand(integrand_core)
-        antiderivative = sympy.integrate(integrand_core_expanded, var_sym)
-
-        eval_b = sympy.simplify(antiderivative.subs(var_sym, sym_b))
-        eval_a = sympy.simplify(antiderivative.subs(var_sym, sym_a))
-        diff_eval = sympy.simplify(eval_b - eval_a)
-
-        # Helper: limpia LaTeX generado por SymPy de valores absolutos residuales
-        def cl(expr: sympy.Expr) -> str:
-            return _clean_latex(sympy.latex(expr))
-
-        steps: list[SolutionStep] = []
-
-        if method == SolidMethod.DISKS:
-            r = r_outer if r_outer is not None else sympy.Symbol("R")
-            steps.append(
-                SolutionStep(
-                    step_number=1,
-                    title="1. Identificación del radio del disco",
-                    explanation=(
-                        f"¡Listo parce! Lo primero es identificar de qué tamaño son los discazos que vamos a ir apilando. "
-                        f"Cuando giramos la región alrededor del eje {axis.label}, cada corte perpendicular a ese eje "
-                        f"nos genera un disco sólido. El radio R({var}) de ese disco es la distancia entre la curva y el eje de giro. "
-                        f"Ojo: ese radio siempre debe ser positivo, así que nos aseguramos de tomar la distancia correcta."
-                    ),
-                    expression_plain_text=f"R({var}) = {r}",
-                    expression_latex=_clean_latex(f"R({var}) = {cl(r)}"),
-                )
-            )
-            steps.append(
-                SolutionStep(
-                    step_number=2,
-                    title="2. Planteamiento de la integral del volumen",
-                    explanation=(
-                        f"De una. El área de cada disco es A = π·R², y su espesor es d{var}. "
-                        f"Entonces el volumen diferencial es dV = π·[R({var})]²·d{var}. "
-                        f"Solo queda sumar (integrar) todos esos discazos a lo largo del intervalo [{sym_a}, {sym_b}]. "
-                        f"Eso nos da la integral que vamos a resolver paso a paso, parcero."
-                    ),
-                    expression_plain_text=f"V = pi * int_({sym_a})^({sym_b}) [R({var})]^2 d{var}",
-                    expression_latex=_clean_latex(
-                        f"V = \\pi \\int_{{{cl(sym_a)}}}^{{{cl(sym_b)}}}"
-                        f" \\left[{cl(r)}\\right]^2 \\, d{var}"
-                    ),
-                )
-            )
-            steps.append(
-                SolutionStep(
-                    step_number=3,
-                    title="3. Expansión y simplificación del integrando",
-                    explanation=(
-                        "Antes de integrar hay que simplificar ese chicharrón algebraico. "
-                        "Elevamos al cuadrado el radio y usamos álgebra para romper los paréntesis "
-                        "y obtener una suma de monomios ordenados. "
-                        "Así la integral se vuelve supermanejable, término a término. ¡Sin estrés!"
-                    ),
-                    expression_plain_text=f"[R({var})]^2 = {integrand_core_expanded}",
-                    expression_latex=_clean_latex(
-                        f"\\left[{cl(r)}\\right]^2 = {cl(integrand_core_expanded)}"
-                    ),
-                )
-            )
-
-        elif method == SolidMethod.WASHERS:
-            r_out = r_outer if r_outer is not None else sympy.Symbol("R_ext")
-            r_in = r_inner if r_inner is not None else sympy.Symbol("R_int")
-            steps.append(
-                SolutionStep(
-                    step_number=1,
-                    title="1. Identificación de radios exterior e interior",
-                    explanation=(
-                        f"¡Ojo acá, parcero! Como la región tiene dos curvas que la delimitan, "
-                        f"al girar alrededor del eje {axis.label} los cortes no son discos sólidos sino "
-                        f"arandelas (como una rosca o un aro). Necesitamos dos radios: "
-                        f"el externo R_ext({var}) (el más alejado del eje) y el interno R_int({var}) (el más cercano). "
-                        f"No los cruce, we, o el volumen le sale negativo."
-                    ),
-                    expression_plain_text=f"R_ext({var}) = {r_out},  R_int({var}) = {r_in}",
-                    expression_latex=_clean_latex(
-                        f"R_{{\\text{{ext}}}}({var}) = {cl(r_out)}, \\quad R_{{\\text{{int}}}}({var}) = {cl(r_in)}"
-                    ),
-                )
-            )
-            steps.append(
-                SolutionStep(
-                    step_number=2,
-                    title="2. Planteamiento de la integral del volumen",
-                    explanation=(
-                        f"Acuérdese de la clase: el área de una arandela es π(R_ext² − R_int²). "
-                        f"Esto viene de restar el área del disco chiquito al del grande. "
-                        f"Multiplicamos por d{var} para tener el volumen diferencial y luego integramos "
-                        f"en [{sym_a}, {sym_b}]. ¡De una vez coronamos el planteamiento!"
-                    ),
-                    expression_plain_text=f"V = pi * int_({sym_a})^({sym_b}) ([R_ext]^2 - [R_int]^2) d{var}",
-                    expression_latex=_clean_latex(
-                        f"V = \\pi \\int_{{{cl(sym_a)}}}^{{{cl(sym_b)}}}"
-                        f" \\left( \\left[{cl(r_out)}\\right]^2"
-                        f" - \\left[{cl(r_in)}\\right]^2 \\right) d{var}"
-                    ),
-                )
-            )
-            steps.append(
-                SolutionStep(
-                    step_number=3,
-                    title="3. Expansión y resta de los radios al cuadrado",
-                    explanation=(
-                        "Le metemos álgebra al asunto: elevamos al cuadrado cada radio y restamos. "
-                        "El objetivo es dejar el integrando como un polinomio o función reconocible "
-                        "para poder aplicar las técnicas de integración que ya conocemos. "
-                        "¡Sin miedo, parcero, esto es solo carpintería algebraica!"
-                    ),
-                    expression_plain_text=f"R_ext^2 - R_int^2 = {integrand_core_expanded}",
-                    expression_latex=_clean_latex(
-                        f"R_{{\\text{{ext}}}}^2 - R_{{\\text{{int}}}}^2 = {cl(integrand_core_expanded)}"
-                    ),
-                )
-            )
-
-        elif method == SolidMethod.SHELLS:
-            p = shell_radius if shell_radius is not None else sympy.Symbol("p")
-            h = shell_height if shell_height is not None else sympy.Symbol("h")
-            steps.append(
-                SolutionStep(
-                    step_number=1,
-                    title="1. Planteamiento geométrico del casquillo cilíndrico",
-                    explanation=(
-                        f"En este caso usamos casquillos cilíndricos: imagínese que en vez de cortar el sólido en "
-                        f"discos, lo pelamos como una cebolla en capas concéntricas. "
-                        f"Cada capa tiene radio medio p({var}) (su distancia al eje {axis.label}) "
-                        f"y altura h({var}) (qué tan alto es ese cilindrito). ¡Así de sencillo!"
-                    ),
-                    expression_plain_text=f"p({var}) = {p},  h({var}) = {h}",
-                    expression_latex=_clean_latex(
-                        f"p({var}) = {cl(p)}, \\quad h({var}) = {cl(h)}"
-                    ),
-                )
-            )
-            steps.append(
-                SolutionStep(
-                    step_number=2,
-                    title="2. Planteamiento de la integral del volumen",
-                    explanation=(
-                        f"Si 'desplegamos' el casquillo como una lámina, obtenemos un rectángulo de área "
-                        f"2π·p·h. Multiplicamos por d{var} y tenemos el volumen diferencial dV = 2π·p({var})·h({var})·d{var}. "
-                        f"Integramos en [{sym_a}, {sym_b}] y listo el pollo, we."
-                    ),
-                    expression_plain_text=f"V = 2*pi * int_({sym_a})^({sym_b}) p({var}) * h({var}) d{var}",
-                    expression_latex=_clean_latex(
-                        f"V = 2\\pi \\int_{{{cl(sym_a)}}}^{{{cl(sym_b)}}}"
-                        f" \\left({cl(p)}\\right) \\left({cl(h)}\\right) d{var}"
-                    ),
-                )
-            )
-            steps.append(
-                SolutionStep(
-                    step_number=3,
-                    title="3. Expansión algebraica del producto radio-altura",
-                    explanation=(
-                        "Expandimos el producto radio por altura para simplificar el integrando. "
-                        "Así nos queda una función más manejable pa' integrar. "
-                        "¡Dele con confianza, esto es álgebra básica!"
-                    ),
-                    expression_plain_text=f"p({var}) * h({var}) = {integrand_core_expanded}",
-                    expression_latex=_clean_latex(
-                        f"p({var}) \\cdot h({var}) = {cl(integrand_core_expanded)}"
-                    ),
-                )
-            )
-
-        # ── Paso 4: Identificación de la técnica de integración ─────────────────
-        tech_title, tech_explanation, tech_latex = _detect_integration_technique(
-            integrand_core_expanded, var_sym
-        )
-        steps.append(
-            SolutionStep(
-                step_number=4,
-                title=f"4. {tech_title}",
-                explanation=tech_explanation,
-                expression_plain_text=tech_title,
-                expression_latex=tech_latex,
-            )
-        )
-
-        # ── Pasos comunes: Antiderivada, TFC y Resultado ────────────────────────
-        factor_str = "2·π" if method == SolidMethod.SHELLS else "π"
-        factor_latex = "2\\pi" if method == SolidMethod.SHELLS else "\\pi"
-
-        steps.append(
-            SolutionStep(
-                step_number=5,
-                title="5. Obtención de la antiderivada (Primitiva F)",
-                explanation=(
-                    f"¡Breve! Aplicamos la técnica identificada en el paso anterior para encontrar "
-                    f"la primitiva F({var}). Recuerde: la primitiva es la función cuya derivada es nuestro integrando. "
-                    f"Por la regla de la potencia: ∫xⁿ dx = xⁿ⁺¹/(n+1) + C. Resolvemos término a término, parcero."
-                ),
-                expression_plain_text=f"F({var}) = ∫({integrand_core_expanded}) d{var} = {antiderivative}",
-                expression_latex=_clean_latex(
-                    f"F({var}) = \\int \\left({cl(integrand_core_expanded)}\\right) d{var}"
-                    f" = {cl(antiderivative)}"
-                ),
-            )
-        )
-
-        steps.append(
-            SolutionStep(
-                step_number=6,
-                title="6. Evaluación en los límites — Teorema Fundamental del Cálculo",
-                explanation=(
-                    f"Ahora aplicamos el Teorema Fundamental del Cálculo (el más importante del semestre, parcero). "
-                    f"Evaluamos la primitiva en el límite superior {sym_b} y le restamos la evaluación "
-                    f"en el límite inferior {sym_a}. Es pura carpintería: enchufar los números y restar. "
-                    f"¡Sin errores de signo, que ese es el error más común en parciales!"
-                ),
-                expression_plain_text=(
-                    f"F({sym_b}) = {eval_b}\n"
-                    f"F({sym_a}) = {eval_a}\n"
-                    f"F({sym_b}) - F({sym_a}) = {diff_eval}"
-                ),
-                expression_latex=_clean_latex(
-                    f"\\int_{{{cl(sym_a)}}}^{{{cl(sym_b)}}} f({var})\\,d{var}"
-                    f" = F({cl(sym_b)}) - F({cl(sym_a)})"
-                    f" = {cl(eval_b)} - {cl(eval_a)}"
-                    f" = {cl(diff_eval)}"
-                ),
-            )
-        )
-
-        approx_text = f" ≈ {num_val:.5f} u³" if num_val is not None else ""
-        steps.append(
-            SolutionStep(
-                step_number=7,
-                title="7. Volumen final — multiplicación por la constante de revolución",
-                explanation=(
-                    f"Por último, multiplicamos la diferencia obtenida por el factor {factor_str} "
-                    f"(que proviene de la fórmula del método, viene de rotar 2π radianes alrededor del eje). "
-                    f"¡Eso es todo, we! Ahí está el resultado exacto y su aproximación decimal. "
-                    f"Ya puede escribirlo en el parcial con toda la seguridad."
-                ),
-                expression_plain_text=f"V = {factor_str} · ({diff_eval}) = {vol_sym}{approx_text}",
-                expression_latex=_clean_latex(
-                    f"V = {factor_latex} \\cdot \\left({cl(diff_eval)}\\right) = {cl(vol_sym)}"
-                ),
-            )
-        )
-
-        return steps
-    except Exception:
-        return []
-
-
-
-
-def calculate_disk_volume(
-    region: Region2D,
-    axis: RevolutionAxis | None = None,
-) -> VolumeResult:
-    """Calcula el volumen de un sólido de revolución macizo mediante el método de Discos.
-
-    Fórmula:
-        V = π ∫_a^b [R(t)]² dt
-
-    Args:
-        region: Definición de la región plana y límites.
-        axis: Eje de rotación (por defecto el eje X).
-
-    Returns:
-        VolumeResult con el valor exacto, decimal y la integral formulada.
-    """
-    if not _SYMPY_AVAILABLE:
-        return VolumeResult(
-            method=SolidMethod.DISKS,
-            is_success=False,
-            error_message="SymPy no está disponible.",
-        )
-
-    axis = axis or RevolutionAxis.x_axis()
-
-    try:
-        f_parsed = _ensure_parsed(region.f_expr)
-        g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
-        var_sym = sympy.Symbol(region.variable)
-        num_a, num_b, sym_a, sym_b = _evaluate_bounds(region.a, region.b)
-
-        # Para discos perpendiculares:
-        # Si la región es en x y el eje es horizontal (y = k): cortes perpendiculares con espesor dx
-        # Si la región es en y y el eje es vertical (x = h): cortes perpendiculares con espesor dy
-        is_perpendicular = (
-            (region.variable == "x" and axis.orientation == AxisOrientation.HORIZONTAL)
-            or (region.variable == "y" and axis.orientation == AxisOrientation.VERTICAL)
-        )
-        if not is_perpendicular:
-            return VolumeResult(
-                method=SolidMethod.DISKS,
-                is_success=False,
-                error_message=(
-                    f"El método de discos requiere cortes perpendiculares al eje {axis.label}. "
-                    f"Para la variable '{region.variable}', considere el método de Casquillos cilíndricos."
-                ),
-            )
-
-        r_outer, r_inner, has_void, warnings_from_curves = _order_curves_by_distance(
-            f_parsed.sympy_expr,
-            g_parsed.sympy_expr,
-            var_sym,
-            axis.position,
-            num_a,
-            num_b,
-        )
-
-        # Construir mensaje de advertencia si hay cruces de curvas
-        cross_warnings = ""
-        if warnings_from_curves:
-            cross_warnings = (
-                f"\n⚠️  **ADVERTENCIA DE CÁLCULO**\n"
-                f"Las curvas se cruzan dentro del intervalo [{num_a}, {num_b}]. El volumen calculado "
-                f"asume que una curva es siempre exterior (basado en el punto medio). "
-                f"Esto puede dar un valor incorrecto si el cruce ocurre cerca de los límites."
-            )
-
-        def _sq(e: sympy.Expr) -> sympy.Expr:
-            if isinstance(e, sympy.Abs):
-                return e.args[0]**2
-            return e**2
-
-        if has_void:
-            integrand_core = _sq(r_outer) - _sq(r_inner)
-            chosen_method = SolidMethod.WASHERS
-        else:
-            integrand_core = _sq(r_outer)
-            chosen_method = SolidMethod.DISKS
-
-        integrand = sympy.pi * integrand_core
-        vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
-
-        num_val = _numeric_value(vol_sym)
-        if num_val is None:
-            num_val = numeric_volume(region, axis)
-
-        # Detectar resultado no finito (integral divergente o dominio imaginario)
-        import math as _math
-        if num_val is not None and not _math.isfinite(num_val):
-            return VolumeResult(
-                method=chosen_method,
-                is_success=False,
-                error_message=(
-                    "La integral del volumen no converge (resultado no finito). "
-                    "Verifique que la función esté definida y sea real en todo el intervalo."
-                ),
-            )
-
-        steps = _build_volume_steps(
-            method=chosen_method,
-            region=region,
-            axis=axis,
-            var_sym=var_sym,
-            sym_a=sym_a,
-            sym_b=sym_b,
-            integrand_core=integrand_core,
-            vol_sym=vol_sym,
-            num_val=num_val,
-            r_outer=r_outer,
-            r_inner=r_inner if has_void else None,
-        )
-
-        return VolumeResult(
-            method=chosen_method,
-            exact_plain_text=str(vol_sym),
-            exact_latex=_clean_latex(sympy.latex(vol_sym)),
-            numeric_value=num_val,
-            integrand_plain_text=str(integrand),
-            integrand_latex=_clean_latex(sympy.latex(integrand)),
-            integral_setup_latex=_clean_latex(
-                f"\\pi \\int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}}"
-                + (
-                    f" \\left({sympy.latex(r_outer**2)} - {sympy.latex(r_inner**2)}\\right) d{region.variable}"
-                    if has_void
-                    else f" \\left({sympy.latex(r_outer**2)}\\right) d{region.variable}"
-                )
-            ),
-            is_success=True,
-            steps=steps,
-            warnings=warnings_from_curves if warnings_from_curves else [],
-        )
-    except Exception as exc:
-        return VolumeResult(
-            method=SolidMethod.DISKS,
-            is_success=False,
-            error_message=str(exc),
-        )
-
-
-
 def find_curve_crossings(
     f_sym: sympy.Expr,
     g_sym: sympy.Expr,
@@ -1432,411 +707,455 @@ def find_curve_crossings(
     return crossings
 
 
-def partition_washer_intervals(
-    f_sym: sympy.Expr,
-    g_sym: sympy.Expr,
-    var_sym: sympy.Symbol,
-    axis_val: float,
-    num_a: float,
-    num_b: float,
-    sym_a: sympy.Expr,
-    sym_b: sympy.Expr,
-) -> list[dict[str, Any]]:
-    """Subdivide el intervalo [a, b] en subintervalos con orden R_ext >= R_int uniforme."""
-    crossings = find_curve_crossings(
-        f_sym, g_sym, var_sym, axis_val, num_a, num_b, method=SolidMethod.WASHERS
-    )
-    bounds = [(num_a, sym_a)] + crossings + [(num_b, sym_b)]
-    axis_sym = sympy.nsimplify(axis_val)
-    dist_f = sympy.Abs(f_sym - axis_sym)
-    dist_g = sympy.Abs(g_sym - axis_sym)
+# ─────────────────────────────────────────────────────────────────────────────
+# Tramos del volumen: radios con signo resuelto, sin Abs ni ramas complejas
+# ─────────────────────────────────────────────────────────────────────────────
 
-    intervals = []
-    for i in range(len(bounds) - 1):
-        t0_num, t0_sym = bounds[i]
-        t1_num, t1_sym = bounds[i + 1]
-        if _dominates(dist_f, dist_g, var_sym, t0_num, t1_num):
-            r_out = dist_f
-            r_in = dist_g
-            core = (f_sym - axis_sym)**2 - (g_sym - axis_sym)**2
-            f_is_outer = True
+@dataclass(frozen=True)
+class _VolumePiece:
+    """Un tramo ``∫_{t0}^{t1} core d(var)`` (sin el factor π o 2π) y cómo se explica."""
+
+    t0_num: float
+    t1_num: float
+    t0: sympy.Expr
+    t1: sympy.Expr
+    core: sympy.Expr
+    radii: tuple[RadiusInfo, ...]
+    setup: str            # integrando en LaTeX con marcadores @nombre@ para cada radio
+    label: str = ""
+    is_disk: bool = False
+
+
+def _fill_setup(setup: str, radii: Sequence[RadiusInfo]) -> str:
+    """Reemplaza los marcadores @nombre@ por el LaTeX de cada radio."""
+    for info in radii:
+        setup = setup.replace(f"@{info.name}@", step_latex(info.expr))
+    return setup
+
+
+def _merge_cuts(*groups: list[tuple[float, sympy.Expr, str]]) -> list[tuple[float, sympy.Expr, str]]:
+    merged: list[tuple[float, sympy.Expr, str]] = []
+    for item in sorted((c for g in groups for c in g), key=lambda c: c[0]):
+        if merged and abs(item[0] - merged[-1][0]) < 1e-7:
+            continue
+        merged.append(item)
+    return merged
+
+
+def _bounds(
+    num_a: float, num_b: float, sym_a: sympy.Expr, sym_b: sympy.Expr,
+    cuts: list[tuple[float, sympy.Expr, str]],
+) -> list[tuple[tuple[float, sympy.Expr], tuple[float, sympy.Expr]]]:
+    points = [(num_a, sym_a), *((c[0], c[1]) for c in cuts), (num_b, sym_b)]
+    return list(zip(points, points[1:]))
+
+
+def _same_piece(p: _VolumePiece, q: _VolumePiece) -> bool:
+    return p.radii == q.radii and p.setup == q.setup and abs(p.t1_num - q.t0_num) < 1e-12
+
+
+def _join_pieces(pieces: list[_VolumePiece]) -> list[_VolumePiece]:
+    """Une tramos contiguos con los mismos radios (un corte que al final no cambió nada)."""
+    out: list[_VolumePiece] = []
+    for piece in pieces:
+        if out and _same_piece(out[-1], piece):
+            prev = out[-1]
+            out[-1] = _VolumePiece(prev.t0_num, piece.t1_num, prev.t0, piece.t1, prev.core, prev.radii,
+                                   prev.setup, prev.label, prev.is_disk)
         else:
-            r_out = dist_g
-            r_in = dist_f
-            core = (g_sym - axis_sym)**2 - (f_sym - axis_sym)**2
-            f_is_outer = False
-
-        intervals.append({
-            "t0_num": t0_num,
-            "t1_num": t1_num,
-            "t0_sym": t0_sym,
-            "t1_sym": t1_sym,
-            "r_outer": r_out,
-            "r_inner": r_in,
-            "core": core,
-            "f_is_outer": f_is_outer,
-        })
-    return intervals
+            out.append(piece)
+    return out
 
 
-def _build_piecewise_washer_steps(
-    region: Region2D,
+def _washer_pieces(
+    f: sympy.Expr, g: sympy.Expr, var_sym: sympy.Symbol, axis: RevolutionAxis,
+    num_a: float, num_b: float, sym_a: sympy.Expr, sym_b: sympy.Expr,
+) -> tuple[list[_VolumePiece], list[tuple[float, sympy.Expr, str]]]:
+    """Tramos de Discos/Arandelas con eje horizontal y = k (cortes en x) o vertical x = h (en y)."""
+    k = sympy.nsimplify(axis.position)
+    v = var_sym.name
+    crossings = [(n, s, "las curvas f y g se cruzan") for n, s in
+                 find_curve_crossings(f, g, var_sym, axis.position, num_a, num_b, method=SolidMethod.SHELLS)]
+    equal = [(n, s, "f y g quedan a la misma distancia del eje") for n, s in
+             find_curve_crossings(f, g, var_sym, axis.position, num_a, num_b, method=SolidMethod.WASHERS)
+             if not any(abs(n - c[0]) < 1e-7 for c in crossings)]
+    signs = [(n, s, "una distancia al eje, un valor absoluto o una raíz impar cambia de signo") for n, s in
+             sign_cut_points((f, g), var_sym, num_a, num_b, extra=(f - k, g - k))]
+    cuts = _merge_cuts(crossings, equal, signs)
+    pieces: list[_VolumePiece] = []
+    for (t0n, t0), (t1n, t1) in _bounds(num_a, num_b, sym_a, sym_b, cuts):
+        fp, gp = real_branch(f, var_sym, t0n, t1n), real_branch(g, var_sym, t0n, t1n)
+        df = _signed_distance(fp - k, var_sym, t0n, t1n)
+        dg = _signed_distance(gp - k, var_sym, t0n, t1n)
+        f_out = _dominates(df, dg, var_sym, t0n, t1n)
+        R, r = (df, dg) if f_out else (dg, df)
+        outer, inner = ("f", "g") if f_out else ("g", "f")
+        R_info = RadiusInfo(
+            f"R({v})", sympy.simplify(R) if R.count_ops() < 30 else R,
+            f"Radio exterior: distancia de la curva {outer} al eje {axis.label}. Se escribe "
+            f"{'curva − eje' if _sign_of(fp - k if f_out else gp - k, var_sym, t0n, t1n) >= 0 else 'eje − curva'} "
+            "para que sea positiva en todo el tramo.",
+        )
+        if r == 0:
+            pieces.append(_VolumePiece(t0n, t1n, t0, t1, R**2, (R_info,), rf"\left[@R({v})@\right]^2",
+                                       is_disk=True))
+            continue
+        r_info = RadiusInfo(
+            f"r({v})", sympy.simplify(r) if r.count_ops() < 30 else r,
+            f"Radio interior: distancia de la curva {inner} al eje {axis.label} (la más cercana).",
+        )
+        pieces.append(_VolumePiece(t0n, t1n, t0, t1, R**2 - r**2, (R_info, r_info),
+                                   rf"\left(\left[@R({v})@\right]^2 - \left[@r({v})@\right]^2\right)"))
+    return _join_pieces(pieces), cuts
+
+
+def _sign_of(expr: sympy.Expr, var_sym: sympy.Symbol, t0: float, t1: float) -> int:
+    s = sign_on(expr, var_sym, t0, t1)
+    return 1 if s is None else s
+
+
+def _shell_pieces(
+    f: sympy.Expr, g: sympy.Expr, var_sym: sympy.Symbol, axis: RevolutionAxis,
+    num_a: float, num_b: float, sym_a: sympy.Expr, sym_b: sympy.Expr,
+) -> tuple[list[_VolumePiece], list[tuple[float, sympy.Expr, str]]]:
+    """Tramos de Casquillos: radio p = ±(t − h) y altura h = curva de arriba − curva de abajo."""
+    h_sym = sympy.nsimplify(axis.position)
+    v = var_sym.name
+    crossings = [(n, s, "las curvas f y g se cruzan") for n, s in
+                 find_curve_crossings(f, g, var_sym, axis.position, num_a, num_b, method=SolidMethod.SHELLS)]
+    signs = [(n, s, "un valor absoluto o una raíz impar cambia de signo") for n, s in
+             sign_cut_points((f, g), var_sym, num_a, num_b)]
+    cuts = _merge_cuts(crossings, signs)
+    pieces: list[_VolumePiece] = []
+    for (t0n, t0), (t1n, t1) in _bounds(num_a, num_b, sym_a, sym_b, cuts):
+        fp, gp = real_branch(f, var_sym, t0n, t1n), real_branch(g, var_sym, t0n, t1n)
+        side = 1 if 0.5 * (t0n + t1n) >= axis.position else -1
+        radius = side * (var_sym - h_sym)
+        f_top = _dominates(fp, gp, var_sym, t0n, t1n)
+        height = (fp - gp) if f_top else (gp - fp)
+        p_info = RadiusInfo(
+            f"p({v})", radius,
+            f"Radio del casquillo: distancia de {v} al eje {axis.label}, "
+            f"{'variable − eje' if side > 0 else 'eje − variable'} porque la región está "
+            f"{'después' if side > 0 else 'antes'} del eje.",
+        )
+        h_info = RadiusInfo(
+            f"h({v})", height,
+            f"Altura del casquillo: curva {'f' if f_top else 'g'} (la de {'arriba' if v == 'x' else 'la derecha'}) "
+            f"menos curva {'g' if f_top else 'f'}.",
+        )
+        pieces.append(_VolumePiece(t0n, t1n, t0, t1, radius * height, (p_info, h_info),
+                                   rf"\left(@p({v})@\right)\left(@h({v})@\right)"))
+    return _join_pieces(pieces), cuts
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Desarrollo paso a paso (lista imprimible) y árbol interactivo
+# ─────────────────────────────────────────────────────────────────────────────
+
+_METHOD_TEXT = {
+    SolidMethod.DISKS: (
+        "Identificación del radio del disco",
+        "Cada corte perpendicular al eje {axis} es un disco macizo. Su radio R({v}) es la distancia de la "
+        "curva al eje; se escribe con el signo que la hace positiva en todo el intervalo.",
+        "El área de un disco es π·R², y cada disco tiene espesor d{v}: dV = π·[R({v})]²·d{v}. "
+        "Sumando (integrando) todos los discos entre {a} y {b} se obtiene el volumen.",
+        "Se eleva el radio al cuadrado y se desarrolla hasta tener una suma de términos sencillos.",
+    ),
+    SolidMethod.WASHERS: (
+        "Identificación de los radios exterior e interior",
+        "La región no toca el eje {axis}, así que cada corte perpendicular es una arandela: un disco de "
+        "radio exterior R({v}) (curva más lejana) con un hueco de radio interior r({v}) (curva más cercana).",
+        "El área de una arandela es π·(R² − r²): el disco grande menos el hueco. Con espesor d{v}, "
+        "dV = π·([R({v})]² − [r({v})]²)·d{v}, y se integra entre {a} y {b}.",
+        "Se elevan los dos radios al cuadrado, se restan y se desarrolla el resultado.",
+    ),
+    SolidMethod.SHELLS: (
+        "Radio y altura del casquillo cilíndrico",
+        "Cada franja paralela al eje {axis} genera al girar un casquillo (un cilindro hueco de pared delgada). "
+        "Su radio p({v}) es la distancia de la franja al eje y su altura h({v}) es la longitud de la franja.",
+        "Si se desenrolla el casquillo se obtiene una lámina de largo 2π·p, alto h y grosor d{v}: "
+        "dV = 2π·p({v})·h({v})·d{v}, y se integra entre {a} y {b}.",
+        "Se multiplica el radio por la altura y se desarrolla el producto.",
+    ),
+}
+
+
+def _single_piece_steps(
+    method: SolidMethod,
     axis: RevolutionAxis,
     var_sym: sympy.Symbol,
-    intervals: list[dict[str, Any]],
-    vol_partials: list[sympy.Expr],
+    piece: _VolumePiece,
+    factor: sympy.Expr,
+    value: sympy.Expr,
     vol_sym: sympy.Expr,
     num_val: float | None,
 ) -> list[SolutionStep]:
-    """Genera el desarrollo pedagógico por tramos cuando las curvas se cruzan."""
-    var = region.variable
-    cl = _clean_latex
-    steps: list[SolutionStep] = []
-
-    # Paso 1: Puntos de intersección
-    cross_points = [it["t1_sym"] for it in intervals[:-1]]
-    cross_str = ", ".join(f"{var} = {p}" for p in cross_points)
-    steps.append(
-        SolutionStep(
-            step_number=1,
-            title="1. Detección de intersecciones y división por tramos",
-            explanation=(
-                f"Las curvas frontera se intersecan en {cross_str} dentro del intervalo "
-                f"[{region.a}, {region.b}]. Para calcular el volumen geométrico sin que "
-                f"las regiones se resten incorrectamente, dividimos el dominio en "
-                f"{len(intervals)} subintervalos."
-            ),
-            expression_plain_text=f"Intersección en: {cross_str}",
-            expression_latex=cl(rf"\text{{Intersección en: }}\; {cross_str}"),
-        )
-    )
-
-    # Paso 2: Radios por tramo
-    explanations = []
-    latex_parts = []
-    for idx, it in enumerate(intervals):
-        r_out_name = f"f({var})" if it.get("f_is_outer", True) else f"g({var})"
-        r_in_name = f"g({var})" if it.get("f_is_outer", True) else f"f({var})"
-        explanations.append(
-            f"En [{it['t0_sym']}, {it['t1_sym']}]: {r_out_name} queda en el exterior y {r_in_name} en el interior."
-        )
-        latex_parts.append(
-            rf"I_{{{idx+1}}} = [{cl(it['t0_sym'])}, {cl(it['t1_sym'])}]: "
-            rf"R_{{ext}} = {cl(it['r_outer'])},\; r_{{int}} = {cl(it['r_inner'])}"
-        )
-
-    steps.append(
-        SolutionStep(
-            step_number=2,
-            title="2. Radios exterior e interior en cada subintervalo",
-            explanation=" ".join(explanations),
-            expression_plain_text="; ".join(explanations),
-            expression_latex=cl(r" \quad ".join(latex_parts)),
-        )
-    )
-
-    # Paso 3: Planteamiento por tramos
-    setup_latex_list = [
-        rf"\pi \int_{{{cl(it['t0_sym'])}}}^{{{cl(it['t1_sym'])}}} \left( {cl(it['core'])} \right) d{var}"
-        for it in intervals
-    ]
-    steps.append(
-        SolutionStep(
-            step_number=3,
-            title="3. Planteamiento de la integral de volumen por tramos",
-            explanation=(
-                "El volumen total es la suma de los volúmenes de revolución de cada subintervalo: "
-                "V = V₁ + V₂ + ..."
-            ),
-            expression_plain_text=" + ".join(f"V_{i+1}" for i in range(len(intervals))),
-            expression_latex=cl(r"V = " + " + ".join(setup_latex_list)),
-        )
-    )
-
-    # Paso 4: Evaluación de cada tramo
-    eval_texts = []
-    eval_latex = []
-    for idx, (it, vp) in enumerate(zip(intervals, vol_partials)):
-        eval_texts.append(f"V_{idx+1} = {vp}")
-        eval_latex.append(rf"V_{{{idx+1}}} = {cl(vp)}")
-
-    steps.append(
-        SolutionStep(
-            step_number=4,
-            title="4. Cálculo de cada integral definida",
-            explanation="Integramos y evaluamos en los límites correspondientes de cada subintervalo.",
-            expression_plain_text="; ".join(eval_texts),
-            expression_latex=cl(r" \quad ".join(eval_latex)),
-        )
-    )
-
-    # Paso 5: Suma y resultado final
+    """Los 7 pasos del desarrollo clásico para un volumen de un solo tramo."""
+    v = var_sym.name
+    shown = SolidMethod.DISKS if piece.is_disk and method != SolidMethod.SHELLS else method
+    title1, expl1, expl2, expl3 = _METHOD_TEXT[shown]
+    fmt = {"axis": axis.label, "v": v, "a": sympy.sstr(piece.t0), "b": sympy.sstr(piece.t1)}
+    a_l, b_l, f_l = step_latex(piece.t0), step_latex(piece.t1), step_latex(factor)
+    expanded = sympy.expand(piece.core)
+    F = antiderivative(expanded, var_sym)  # la misma F que el desglose interactivo
+    if F.has(sympy.Integral):
+        raise ValueError("La primitiva no tiene forma cerrada")
+    F_b = sympy.simplify(F.subs(var_sym, piece.t1))
+    F_a = sympy.simplify(F.subs(var_sym, piece.t0))
+    tech_title, tech_expl, tech_latex = describe_technique(expanded, var_sym)
+    technique = tech_title.removeprefix("Técnica de integración: ")
+    radii_plain = ",  ".join(f"{r.name} = {sympy.sstr(r.expr)}" for r in piece.radii)
+    radii_latex = r", \quad ".join(f"{r.name} = {step_latex(r.expr)}" for r in piece.radii)
+    setup_l = _fill_setup(piece.setup, piece.radii)
     approx_text = f" ≈ {num_val:.5f} u³" if num_val is not None else ""
-    steps.append(
+    approx_latex = rf" \approx {num_val:.5f}" if num_val is not None else ""
+    return [
+        SolutionStep(1, f"1. {title1}", expl1.format(**fmt) + " " + " ".join(r.meaning for r in piece.radii),
+                     radii_plain, radii_latex),
+        SolutionStep(2, "2. Planteamiento de la integral del volumen", expl2.format(**fmt),
+                     f"V = {sympy.sstr(factor)} * int_({fmt['a']})^({fmt['b']}) {sympy.sstr(piece.core)} d{v}",
+                     rf"V = {f_l} \int_{{{a_l}}}^{{{b_l}}} {setup_l} \, d{v}"),
+        SolutionStep(3, "3. Expansión algebraica del integrando", expl3.format(**fmt),
+                     f"{sympy.sstr(piece.core)} = {sympy.sstr(expanded)}",
+                     rf"{step_latex(piece.core)} = {step_latex(expanded)}"),
+        SolutionStep(4, f"4. {tech_title}", tech_expl, tech_title, tech_latex),
         SolutionStep(
-            step_number=5,
-            title="5. Volumen total final (suma de tramos)",
-            explanation="Sumamos el volumen aportado por cada tramo para obtener el volumen geométrico total exacto.",
-            expression_plain_text=f"V = {' + '.join(str(vp) for vp in vol_partials)} = {vol_sym}{approx_text}",
-            expression_latex=cl(rf"V = {' + '.join(sympy.latex(vp) for vp in vol_partials)} = {sympy.latex(vol_sym)}"),
+            5, "5. Obtención de la antiderivada (primitiva F)",
+            f"Se aplica {technique[0].lower() + technique[1:]} término a término. Comprobación: al derivar F "
+            f"se recupera el integrando, F'({v}) = {sympy.sstr(expanded)}.",
+            f"F({v}) = ∫({sympy.sstr(expanded)}) d{v} = {sympy.sstr(F)}",
+            rf"F({v}) = \int \left({step_latex(expanded)}\right) d{v} = {step_latex(F)}",
+        ),
+        SolutionStep(
+            6, "6. Evaluación en los límites (Teorema Fundamental del Cálculo)",
+            f"La integral definida es F({fmt['b']}) − F({fmt['a']}): la primitiva en el límite superior menos "
+            "la primitiva en el inferior.",
+            f"F({fmt['b']}) = {sympy.sstr(F_b)}\nF({fmt['a']}) = {sympy.sstr(F_a)}\n"
+            f"F({fmt['b']}) - F({fmt['a']}) = {sympy.sstr(value)}",
+            rf"\int_{{{a_l}}}^{{{b_l}}} \left({step_latex(expanded)}\right) d{v} = F({b_l}) - F({a_l})"
+            rf" = {step_latex(F_b)} - \left({step_latex(F_a)}\right) = {step_latex(value)}",
+        ),
+        SolutionStep(
+            7, "7. Volumen final",
+            f"Se multiplica el valor de la integral por el factor {sympy.sstr(factor)} de la fórmula del método.",
+            f"V = {sympy.sstr(factor)} · ({sympy.sstr(value)}) = {sympy.sstr(vol_sym)}{approx_text}",
+            rf"V = {f_l} \cdot \left({step_latex(value)}\right) = {step_latex(vol_sym)}{approx_latex}",
+        ),
+    ]
+
+
+def _multi_piece_steps(
+    method: SolidMethod,
+    var_sym: sympy.Symbol,
+    pieces: list[_VolumePiece],
+    cuts: list[tuple[float, sympy.Expr, str]],
+    factor: sympy.Expr,
+    partials: list[sympy.Expr],
+    vol_sym: sympy.Expr,
+    num_val: float | None,
+) -> list[SolutionStep]:
+    """Desarrollo por tramos: cortes, radios de cada tramo, planteamiento, cada integral y suma."""
+    v = var_sym.name
+    f_l = step_latex(factor)
+    used = [c for c in cuts if any(abs(c[0] - p.t0_num) < 1e-9 for p in pieces[1:])]
+    cut_text = "; ".join(f"{v} = {sympy.sstr(c[1])} ({c[2]})" for c in used)
+    cut_latex = r",\quad ".join(f"{v} = {step_latex(c[1])}" for c in used)
+    radii_text, radii_latex, setup_latex = [], [], []
+    for k, p in enumerate(pieces, start=1):
+        radii_text.append(f"Tramo {k} [{sympy.sstr(p.t0)}, {sympy.sstr(p.t1)}]: "
+                          + ", ".join(f"{r.name} = {sympy.sstr(r.expr)}" for r in p.radii))
+        radii_latex.append(rf"I_{{{k}}} = \left[{step_latex(p.t0)}, {step_latex(p.t1)}\right]:\;"
+                           + r",\; ".join(f"{r.name} = {step_latex(r.expr)}" for r in p.radii))
+        setup_latex.append(rf"{f_l} \int_{{{step_latex(p.t0)}}}^{{{step_latex(p.t1)}}} "
+                           rf"{_fill_setup(p.setup, p.radii)} \, d{v}")
+    vk = [sympy.simplify(factor * pv) for pv in partials]
+    approx_text = f" ≈ {num_val:.5f} u³" if num_val is not None else ""
+    approx_latex = rf" \approx {num_val:.5f}" if num_val is not None else ""
+    what = "la altura del casquillo" if method == SolidMethod.SHELLS else "qué curva es la exterior"
+    return [
+        SolutionStep(1, "1. Detección de intersecciones y división por tramos",
+                     f"El intervalo se divide en {cut_text}. En cada tramo {what} y el signo de cada distancia "
+                     f"no cambian, así que el integrando se escribe sin valores absolutos.",
+                     f"Intersección en: {cut_text}", cut_latex),
+        SolutionStep(2, "2. Radios en cada tramo",
+                     " ".join(" ".join(r.meaning for r in p.radii[:1]) for p in pieces[:1]) + " " + " ".join(radii_text),
+                     "; ".join(radii_text), r" \quad ".join(radii_latex)),
+        SolutionStep(3, "3. Planteamiento de la integral de volumen por tramos",
+                     "El volumen total es la suma de los volúmenes de cada tramo: V = V₁ + V₂ + …",
+                     " + ".join(f"V_{k}" for k in range(1, len(pieces) + 1)),
+                     "V = " + " + ".join(setup_latex)),
+        SolutionStep(4, "4. Cálculo de cada integral definida",
+                     "Cada integral se resuelve con su primitiva y el Teorema Fundamental del Cálculo "
+                     "(el detalle está en el desglose interactivo).",
+                     "; ".join(f"V_{k} = {sympy.sstr(x)}" for k, x in enumerate(vk, start=1)),
+                     r" \quad ".join(rf"V_{{{k}}} = {step_latex(x)}" for k, x in enumerate(vk, start=1))),
+        SolutionStep(5, "5. Volumen total (suma de tramos)",
+                     "Se suman los volúmenes de los tramos.",
+                     f"V = {' + '.join(sympy.sstr(x) for x in vk)} = {sympy.sstr(vol_sym)}{approx_text}",
+                     rf"V = {' + '.join(step_latex(x) for x in vk)} = {step_latex(vol_sym)}{approx_latex}"),
+    ]
+
+
+def _step_tree(
+    method_label: str,
+    var_sym: sympy.Symbol,
+    factor: sympy.Expr,
+    pieces: list[_VolumePiece],
+    vol_sym: sympy.Expr,
+    num_val: float | None,
+    preface: Sequence[StepNode] = (),
+    ids: IdGenerator | None = None,
+) -> StepNode | None:
+    """Árbol del desglose interactivo; ``None`` si no se pudo construir (el resultado no se pierde)."""
+    try:
+        return build_volume_tree(
+            method_label=method_label,
+            var=var_sym,
+            factor=factor,
+            pieces=[
+                StepPiece(p.t0, p.t1, p.core, p.radii, p.setup,
+                          f"{var_sym.name} ∈ [{sympy.sstr(p.t0)}, {sympy.sstr(p.t1)}]" if len(pieces) > 1 else p.label)
+                for p in pieces
+            ],
+            volume=vol_sym,
+            numeric_value=num_val,
+            preface=preface,
+            ids=ids,
         )
+    except Exception:  # noqa: BLE001 - el desglose es complementario al resultado
+        logger.debug("No se pudo construir el árbol de pasos", exc_info=True)
+        return None
+
+
+def _volume_from_pieces(
+    method: SolidMethod,
+    axis: RevolutionAxis,
+    var_sym: sympy.Symbol,
+    pieces: list[_VolumePiece],
+    cuts: list[tuple[float, sympy.Expr, str]],
+    *,
+    preface_steps: Sequence[SolutionStep] = (),
+    preface_nodes: Sequence[StepNode] = (),
+    ids: IdGenerator | None = None,
+    extra_warnings: Sequence[str] = (),
+) -> VolumeResult:
+    """Integra cada tramo, arma el desarrollo (lista y árbol) y devuelve el ``VolumeResult``."""
+    factor = 2 * sympy.pi if method == SolidMethod.SHELLS else sympy.pi
+    partials = [sympy.simplify(sympy.integrate(p.core, (var_sym, p.t0, p.t1))) for p in pieces]
+    vol_sym = sympy.simplify(factor * sympy.Add(*partials))
+    num_val = _numeric_value(vol_sym)
+    if num_val is None or not math.isfinite(num_val):
+        return VolumeResult(
+            method=method,
+            is_success=False,
+            error_message=(
+                "La integral del volumen no converge o no es real. Verifique que las funciones estén "
+                "definidas y sean reales en todo el intervalo."
+            ),
+        )
+    if method == SolidMethod.DISKS and not all(p.is_disk for p in pieces):
+        method = SolidMethod.WASHERS  # la región no toca el eje: hay hueco
+    v = var_sym.name
+    steps: list[SolutionStep]
+    try:
+        if len(pieces) == 1:
+            steps = _single_piece_steps(method, axis, var_sym, pieces[0], factor, partials[0], vol_sym, num_val)
+        else:
+            steps = _multi_piece_steps(method, var_sym, pieces, cuts, factor, partials, vol_sym, num_val)
+    except Exception:  # noqa: BLE001 - p. ej. primitiva sin forma cerrada: se informa el resultado
+        logger.debug("No se pudo armar el desarrollo", exc_info=True)
+        steps = []
+    if preface_steps:
+        steps = [
+            SolutionStep(i, f"{i}. {re.sub(r'^[0-9]+[.] *', '', s.title)}", s.explanation,
+                         s.expression_plain_text, s.expression_latex)
+            for i, s in enumerate([*preface_steps, *steps], start=1)
+        ]
+    tree = _step_tree(f"Método de {method.value}", var_sym, factor, pieces, vol_sym, num_val,
+                      preface_nodes, ids)
+    setup = " + ".join(
+        rf"{step_latex(factor)} \int_{{{step_latex(p.t0)}}}^{{{step_latex(p.t1)}}} {_fill_setup(p.setup, p.radii)} \, d{v}"
+        for p in pieces
+    )
+    warnings = list(extra_warnings)
+    crossing_cuts = [c for c in cuts if "cruzan" in c[2] and any(abs(c[0] - p.t0_num) < 1e-9 for p in pieces[1:])]
+    if crossing_cuts:
+        where = ", ".join(f"{v} = {sympy.sstr(c[1])}" for c in crossing_cuts)
+        warnings.append(
+            f"Las curvas se cruzan en {where}. La región se dividió en {len(pieces)} tramos y en cada uno "
+            "se usa la curva que corresponde (exterior o de arriba)."
+        )
+    integrand = factor * (pieces[0].core if len(pieces) == 1 else sympy.Add(*(p.core for p in pieces)))
+    return VolumeResult(
+        method=method,
+        exact_plain_text=str(vol_sym),
+        exact_latex=step_latex(vol_sym),
+        numeric_value=num_val,
+        integrand_plain_text=str(integrand) if len(pieces) == 1 else " + ".join(str(factor * p.core) for p in pieces),
+        integrand_latex=step_latex(integrand) if len(pieces) == 1 else setup,
+        integral_setup_latex=setup,
+        is_success=True,
+        steps=steps,
+        warnings=warnings,
+        step_tree=tree,
     )
 
-    return steps
+
+def calculate_disk_volume(
+    region: Region2D,
+    axis: RevolutionAxis | None = None,
+) -> VolumeResult:
+    """Volumen por Discos: V = π ∫_a^b [R(t)]² dt.
+
+    Si la región no toca el eje (hay hueco), el resultado se calcula por Arandelas, partiendo en
+    los cruces (antes se integraba R² − r² sin partir y daba volúmenes negativos: hallazgo M4).
+    """
+    return _perpendicular_volume(region, axis or RevolutionAxis.x_axis(), SolidMethod.DISKS)
 
 
 def calculate_washer_volume(
     region: Region2D,
     axis: RevolutionAxis | None = None,
 ) -> VolumeResult:
-    """Calcula el volumen mediante el método de Arandelas (corte transversal con vacío interior).
+    """Volumen por Arandelas: V = π ∫_a^b ([R(t)]² − [r(t)]²) dt, por tramos si hace falta."""
+    return _perpendicular_volume(region, axis or RevolutionAxis.x_axis(), SolidMethod.WASHERS)
 
-    Fórmula:
-        V = π ∫_a^b [R_ext(t)² − R_int(t)²] dt
 
-    Args:
-        region: Definición de la región plana delimitada por dos funciones y límites.
-        axis: Eje de rotación (por defecto el eje X).
-
-    Returns:
-        VolumeResult con el volumen exacto, integrando y desarrollo simbólico.
-    """
+def _perpendicular_volume(region: Region2D, axis: RevolutionAxis, method: SolidMethod) -> VolumeResult:
     if not _SYMPY_AVAILABLE:
-        return VolumeResult(
-            method=SolidMethod.WASHERS,
-            is_success=False,
-            error_message="SymPy no está disponible.",
-        )
-
-    axis = axis or RevolutionAxis.x_axis()
-
+        return VolumeResult(method=method, is_success=False, error_message="SymPy no está disponible.")
     try:
-        f_parsed = _ensure_parsed(region.f_expr)
-        g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
-        var_sym = sympy.Symbol(region.variable)
-        num_a, num_b, sym_a, sym_b = _evaluate_bounds(region.a, region.b)
-
-        is_perpendicular = (
-            (region.variable == "x" and axis.orientation == AxisOrientation.HORIZONTAL)
-            or (region.variable == "y" and axis.orientation == AxisOrientation.VERTICAL)
-        )
-        if not is_perpendicular:
+        if not is_method_compatible(method, axis, region.variable):
+            word = "discos" if method == SolidMethod.DISKS else "arandelas"
             return VolumeResult(
-                method=SolidMethod.WASHERS,
+                method=method,
                 is_success=False,
                 error_message=(
-                    f"El método de arandelas requiere cortes perpendiculares al eje {axis.label}. "
+                    f"El método de {word} requiere cortes perpendiculares al eje {axis.label}. "
                     f"Para integrar en '{region.variable}', considere el método de Casquillos."
                 ),
             )
-
-        intervals = partition_washer_intervals(
-            f_parsed.sympy_expr,
-            g_parsed.sympy_expr,
-            var_sym,
-            axis.position,
-            num_a,
-            num_b,
-            sym_a,
-            sym_b,
-        )
-        has_crossings = len(intervals) > 1
-
-        if not has_crossings:
-            t_info = intervals[0]
-            r_outer = t_info["r_outer"]
-            r_inner = t_info["r_inner"]
-            integrand_core = t_info["core"]
-            integrand = sympy.pi * integrand_core
-            vol_sym = sympy.integrate(integrand, (var_sym, sym_a, sym_b))
-            num_val = _numeric_value(vol_sym)
-            if num_val is None:
-                num_val = numeric_volume(region, axis)
-
-            steps = _build_volume_steps(
-                method=SolidMethod.WASHERS,
-                region=region,
-                axis=axis,
-                var_sym=var_sym,
-                sym_a=sym_a,
-                sym_b=sym_b,
-                integrand_core=integrand_core,
-                vol_sym=vol_sym,
-                num_val=num_val,
-                r_outer=r_outer,
-                r_inner=r_inner,
-            )
-
-            return VolumeResult(
-                method=SolidMethod.WASHERS,
-                exact_plain_text=str(vol_sym),
-                exact_latex=_clean_latex(sympy.latex(vol_sym)),
-                numeric_value=num_val,
-                integrand_plain_text=str(integrand),
-                integrand_latex=_clean_latex(sympy.latex(integrand)),
-                integral_setup_latex=_clean_latex(
-                    rf"\pi \int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}} "
-                    rf"\left[ {sympy.latex(r_outer)}^2 - {sympy.latex(r_inner)}^2 \right] d{region.variable}"
-                ),
-                is_success=True,
-                steps=steps,
-                warnings=[],
-            )
-        else:
-            vol_partials = []
-            setup_parts = []
-            for item in intervals:
-                sub_a_sym = item["t0_sym"]
-                sub_b_sym = item["t1_sym"]
-                core_j = item["core"]
-                v_j = sympy.integrate(sympy.pi * core_j, (var_sym, sub_a_sym, sub_b_sym))
-                vol_partials.append(v_j)
-                setup_parts.append(
-                    rf"\pi \int_{{{sympy.latex(sub_a_sym)}}}^{{{sympy.latex(sub_b_sym)}}} "
-                    rf"\left[ {sympy.latex(item['r_outer'])}^2 - {sympy.latex(item['r_inner'])}^2 \right] d{region.variable}"
-                )
-
-            vol_sym = sympy.simplify(sum(vol_partials))
-            num_val = _numeric_value(vol_sym)
-            if num_val is None:
-                num_val = numeric_volume(region, axis)
-
-            setup_latex = _clean_latex(" + ".join(setup_parts))
-            steps = _build_piecewise_washer_steps(
-                region=region,
-                axis=axis,
-                var_sym=var_sym,
-                intervals=intervals,
-                vol_partials=vol_partials,
-                vol_sym=vol_sym,
-                num_val=num_val,
-            )
-
-            cross_warn = [
-                f"Las curvas se cruzan dentro del intervalo [{num_a}, {num_b}]. La región se dividió "
-                f"en {len(intervals)} subintervalos para calcular el volumen geométrico exacto por tramos."
-            ]
-
-            return VolumeResult(
-                method=SolidMethod.WASHERS,
-                exact_plain_text=str(vol_sym),
-                exact_latex=_clean_latex(sympy.latex(vol_sym)),
-                numeric_value=num_val,
-                integrand_plain_text=" + ".join(str(sympy.pi * it["core"]) for it in intervals),
-                integrand_latex=setup_latex,
-                integral_setup_latex=setup_latex,
-                is_success=True,
-                steps=steps,
-                warnings=cross_warn,
-            )
-    except Exception as exc:
-        return VolumeResult(
-            method=SolidMethod.WASHERS,
-            is_success=False,
-            error_message=str(exc),
-        )
-
-
-def _build_piecewise_shell_steps(
-    region: Region2D,
-    radius_expr: sympy.Expr,
-    pieces: list[tuple[sympy.Expr, sympy.Expr, sympy.Expr]],
-    top_is_f: list[bool],
-    vol_partials: list[sympy.Expr],
-    vol_sym: sympy.Expr,
-    num_val: float | None,
-) -> list[SolutionStep]:
-    """Desarrollo pedagógico de casquillos cuando las curvas se cruzan (un tramo por orientación)."""
-    var = region.variable
-    cl = _clean_latex
-
-    def height_latex(h: sympy.Expr, f_on_top: bool) -> str:
-        if h.has(sympy.Piecewise):  # repetir un spline completo en cada tramo lo haría ilegible
-            return "f(x) - g(x)" if f_on_top else "g(x) - f(x)"
-        return sympy.latex(h)
-
-    cuts = [t1 for _t0, t1, _h in pieces[:-1]]
-    cuts_text = ", ".join(f"{var} = {c}" for c in cuts)
-    setup = [
-        rf"2\pi \int_{{{sympy.latex(t0)}}}^{{{sympy.latex(t1)}}} {sympy.latex(radius_expr)}\left({height_latex(h, top)}\right) d{var}"
-        for (t0, t1, h), top in zip(pieces, top_is_f)
-    ]
-    approx_text = f" ≈ {num_val:.5f} u³" if num_val is not None else ""
-    return [
-        SolutionStep(
-            step_number=1,
-            title="1. Detección de intersecciones y división por tramos",
-            explanation=(
-                f"Las curvas se cruzan en {cuts_text} dentro de [{region.a}, {region.b}]. La altura del "
-                f"casquillo es |f − g|, así que se integra en {len(pieces)} tramos, cada uno con la curva "
-                "de arriba menos la de abajo."
-            ),
-            expression_plain_text=f"Intersección en: {cuts_text}",
-            expression_latex=cl(rf"\text{{Intersección en: }}\; {cuts_text}"),
-        ),
-        SolutionStep(
-            step_number=2,
-            title="2. Planteamiento de la integral de volumen por tramos",
-            explanation="El volumen total es la suma de los volúmenes de cada tramo: V = V₁ + V₂ + ...",
-            expression_plain_text=" + ".join(f"V_{i + 1}" for i in range(len(pieces))),
-            expression_latex=cl("V = " + " + ".join(setup)),
-        ),
-        SolutionStep(
-            step_number=3,
-            title="3. Cálculo de cada integral definida",
-            explanation="Integramos y evaluamos en los límites de cada tramo.",
-            expression_plain_text="; ".join(f"V_{i + 1} = {vp}" for i, vp in enumerate(vol_partials)),
-            expression_latex=cl(r" \quad ".join(rf"V_{{{i + 1}}} = {sympy.latex(vp)}" for i, vp in enumerate(vol_partials))),
-        ),
-        SolutionStep(
-            step_number=4,
-            title="4. Volumen total final (suma de tramos)",
-            explanation="Sumamos el volumen de cada tramo para obtener el volumen total.",
-            expression_plain_text=f"V = {vol_sym}{approx_text}",
-            expression_latex=cl(rf"V = {sympy.latex(vol_sym)}"),
-        ),
-    ]
+        f = _ensure_parsed(region.f_expr).sympy_expr
+        g = _ensure_parsed(region.g_expr, default_zero=True).sympy_expr
+        var_sym = sympy.Symbol(region.variable)
+        num_a, num_b, sym_a, sym_b = _evaluate_bounds(region.a, region.b)
+        pieces, cuts = _washer_pieces(f, g, var_sym, axis, num_a, num_b, sym_a, sym_b)
+        return _volume_from_pieces(method, axis, var_sym, pieces, cuts)
+    except Exception as exc:  # noqa: BLE001
+        return VolumeResult(method=method, is_success=False, error_message=str(exc))
 
 
 def calculate_shell_volume(
     region: Region2D,
     axis: RevolutionAxis | None = None,
 ) -> VolumeResult:
-    """Calcula el volumen de un sólido mediante el método de Casquillos Cilíndricos (capas cilíndricas).
-
-    Fórmula:
-        V = 2π ∫_a^b [radio(t) · altura(t)] dt
-
-    Args:
-        region: Región plana y límites.
-        axis: Eje de rotación (por defecto el eje Y).
-
-    Returns:
-        VolumeResult con el volumen exacto y la integral formulada.
-    """
-    if not _SYMPY_AVAILABLE:
-        return VolumeResult(
-            method=SolidMethod.SHELLS,
-            is_success=False,
-            error_message="SymPy no está disponible.",
-        )
-
+    """Volumen por Casquillos: V = 2π ∫_a^b p(t)·h(t) dt, con p = ±(t − h) sin valor absoluto."""
     axis = axis or RevolutionAxis.y_axis()
-
+    if not _SYMPY_AVAILABLE:
+        return VolumeResult(method=SolidMethod.SHELLS, is_success=False, error_message="SymPy no está disponible.")
     try:
-        f_parsed = _ensure_parsed(region.f_expr)
-        g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
-        var_sym = sympy.Symbol(region.variable)
-        num_a, num_b, sym_a, sym_b = _evaluate_bounds(region.a, region.b)
-
-        # En casquillos, el espesor diferencial (dt) es PARALELO al eje de rotación:
-        # Si variable es x, el corte vertical es paralelo a un eje vertical (x = h).
-        # Si variable es y, el corte horizontal es paralelo a un eje horizontal (y = k).
-        is_parallel = (
-            (region.variable == "x" and axis.orientation == AxisOrientation.VERTICAL)
-            or (region.variable == "y" and axis.orientation == AxisOrientation.HORIZONTAL)
-        )
-        if not is_parallel:
+        if not is_method_compatible(SolidMethod.SHELLS, axis, region.variable):
             return VolumeResult(
                 method=SolidMethod.SHELLS,
                 is_success=False,
@@ -1845,91 +1164,132 @@ def calculate_shell_volume(
                     f"Para integrar en '{region.variable}', considere Discos o Arandelas."
                 ),
             )
+        f = _ensure_parsed(region.f_expr).sympy_expr
+        g = _ensure_parsed(region.g_expr, default_zero=True).sympy_expr
+        var_sym = sympy.Symbol(region.variable)
+        num_a, num_b, sym_a, sym_b = _evaluate_bounds(region.a, region.b)
+        pieces, cuts = _shell_pieces(f, g, var_sym, axis, num_a, num_b, sym_a, sym_b)
+        return _volume_from_pieces(SolidMethod.SHELLS, axis, var_sym, pieces, cuts)
+    except Exception as exc:  # noqa: BLE001
+        return VolumeResult(method=SolidMethod.SHELLS, is_success=False, error_message=str(exc))
 
-        # Radio del casquillo: distancia desde la variable 't' al eje
-        axis_pos_sym = sympy.nsimplify(axis.position)
-        radius_expr = sympy.Abs(var_sym - axis_pos_sym)
 
-        # Altura del casquillo: |f − g|. Si las curvas se cruzan dentro de (a, b), se integra por
-        # tramos con la orientación correcta en cada uno. Antes se usaba (f − g) o (g − f) según el
-        # punto medio para TODO el intervalo: con f = x, g = x² en [0, 2] y eje Y daba −8π/3 en
-        # lugar de 3π, marcado como éxito.
-        f_expr, g_expr = f_parsed.sympy_expr, g_parsed.sympy_expr
-        warnings_from_curves: list[str] = []
-        crossings = find_curve_crossings(
-            f_expr, g_expr, var_sym, axis.position, num_a, num_b, method=SolidMethod.SHELLS
+# ─────────────────────────────────────────────────────────────────────────────
+# Inversión a la otra variable por franjas horizontales (hallazgo A1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _strip_pieces(
+    strips: list[Strip],
+    method: SolidMethod,
+    axis: RevolutionAxis,
+    t_sym: sympy.Symbol,
+    x_name: str,
+) -> list[_VolumePiece]:
+    """Tramos en la nueva variable a partir de las franjas: arandelas (eje ⟂) o casquillos (eje ∥)."""
+    pos = sympy.nsimplify(axis.position)
+    t = t_sym.name
+    pieces: list[_VolumePiece] = []
+    for strip in strips:
+        label = f"{t} ∈ [{sympy.sstr(strip.y0)}, {sympy.sstr(strip.y1)}]: " + "; ".join(
+            f"de {left.describe(x_name)} a {right.describe(x_name)}" for left, right in strip.intervals
         )
-        bounds = [(num_a, sym_a)] + crossings + [(num_b, sym_b)]
-        pieces: list[tuple[sympy.Expr, sympy.Expr, sympy.Expr]] = []
-        orientation: list[bool] = []
-        for (t0_num, t0_sym), (t1_num, t1_sym) in zip(bounds, bounds[1:]):
-            top_is_f = _dominates(f_expr, g_expr, var_sym, t0_num, t1_num)
-            orientation.append(top_is_f)
-            pieces.append((t0_sym, t1_sym, (f_expr - g_expr) if top_is_f else (g_expr - f_expr)))
+        mid_t = 0.5 * (strip.y0_num + strip.y1_num)
+        if method == SolidMethod.SHELLS:
+            side = 1 if mid_t >= axis.position else -1
+            radius = side * (t_sym - pos)
+            height = sympy.Add(*(right.expr - left.expr for left, right in strip.intervals))
+            height = real_branch(height, t_sym, strip.y0_num, strip.y1_num)
+            pieces.append(_VolumePiece(
+                strip.y0_num, strip.y1_num, strip.y0, strip.y1, radius * height,
+                (RadiusInfo(f"p({t})", radius, f"Radio: distancia de {t} al eje {axis.label}."),
+                 RadiusInfo(f"h({t})", height, "Largo de la franja horizontal: borde derecho menos borde izquierdo.")),
+                rf"\left(@p({t})@\right)\left(@h({t})@\right)", label,
+            ))
+            continue
+        core = sympy.Integer(0)
+        radii: list[RadiusInfo] = []
+        setup_parts: list[str] = []
+        disk = True
+        for k, (left, right) in enumerate(strip.intervals, start=1):
+            mid_x = 0.5 * (float(sympy.N(left.expr.subs(t_sym, mid_t))) + float(sympy.N(right.expr.subs(t_sym, mid_t))))
+            if mid_x >= axis.position:
+                R, r = right.expr - pos, left.expr - pos
+            else:
+                R, r = pos - left.expr, pos - right.expr
+            R = real_branch(sympy.simplify(R), t_sym, strip.y0_num, strip.y1_num)
+            r = real_branch(sympy.simplify(r), t_sym, strip.y0_num, strip.y1_num)
+            suffix = f"_{k}" if len(strip.intervals) > 1 else ""
+            radii.append(RadiusInfo(f"R{suffix}({t})", R, f"Radio exterior: borde de la franja más lejano del eje {axis.label}."))
+            if r == 0:
+                core += R**2
+                setup_parts.append(rf"\left[@R{suffix}({t})@\right]^2")
+            else:
+                disk = False
+                radii.append(RadiusInfo(f"r{suffix}({t})", r, f"Radio interior: borde de la franja más cercano al eje {axis.label}."))
+                core += R**2 - r**2
+                setup_parts.append(rf"\left[@R{suffix}({t})@\right]^2 - \left[@r{suffix}({t})@\right]^2")
+        setup = " + ".join(f"\\left({s}\\right)" if (len(setup_parts) > 1 or " - " in s) else s for s in setup_parts)
+        pieces.append(_VolumePiece(strip.y0_num, strip.y1_num, strip.y0, strip.y1, core, tuple(radii),
+                                   setup, label, is_disk=disk))
+    return _join_pieces(pieces)
 
-        vol_partials = [
-            sympy.integrate(2 * sympy.pi * radius_expr * h, (var_sym, t0, t1)) for t0, t1, h in pieces
-        ]
-        vol_sym = sympy.Add(*vol_partials)
-        num_val = _numeric_value(vol_sym)
-        if num_val is None:
-            num_val = numeric_volume(region, axis)
 
-        if len(pieces) == 1:
-            height_expr = pieces[0][2]
-            integrand_core = radius_expr * height_expr
-            steps = _build_volume_steps(
-                method=SolidMethod.SHELLS,
-                region=region,
-                axis=axis,
-                var_sym=var_sym,
-                sym_a=sym_a,
-                sym_b=sym_b,
-                integrand_core=integrand_core,
-                vol_sym=vol_sym,
-                num_val=num_val,
-                shell_radius=radius_expr,
-                shell_height=height_expr,
-            )
-        else:
-            height_expr = sympy.Abs(f_expr - g_expr)
-            integrand_core = radius_expr * height_expr
-            warnings_from_curves.append(
-                f"Las curvas se cruzan dentro del intervalo [{num_a}, {num_b}]. La altura del casquillo es "
-                f"|f − g| y la integral se dividió en {len(pieces)} tramos."
-            )
-            # Desarrollo por tramos: el desarrollo genérico re-integraba x·|f − g| con SymPy, y con
-            # un spline (Piecewise) tardaba ~135 s de los ~139 s del cálculo.
-            steps = _build_piecewise_shell_steps(
-                region, radius_expr, pieces, orientation, vol_partials, vol_sym, num_val
-            )
-        integrand = 2 * sympy.pi * integrand_core
-
-        return VolumeResult(
-            method=SolidMethod.SHELLS,
-            exact_plain_text=str(vol_sym),
-            exact_latex=_clean_latex(sympy.latex(vol_sym)),
-            numeric_value=num_val,
-            integrand_plain_text=str(integrand),
-            integrand_latex=_clean_latex(sympy.latex(integrand)),
-            integral_setup_latex=(
-                steps[1].expression_latex.removeprefix("V = ")  # suma por tramos: _clean_latex quitaría |f − g|
-                if len(pieces) > 1
-                else _clean_latex(
-                    f"2\\pi \\int_{{{sympy.latex(sym_a)}}}^{{{sympy.latex(sym_b)}}} "
-                    f"\\left({sympy.latex(radius_expr)}\\right) \\left({sympy.latex(height_expr)}\\right) d{region.variable}"
-                )
-            ),
-            is_success=True,
-            steps=steps,
-            warnings=warnings_from_curves if warnings_from_curves else [],
+def _inversion_preface(
+    region: Region2D, strips: list[Strip], t_name: str, method: SolidMethod, axis: RevolutionAxis,
+    ids: IdGenerator,
+) -> tuple[SolutionStep, StepNode]:
+    x = region.variable
+    lines = []
+    latex_lines = []
+    for s in strips:
+        parts = "; ".join(f"de {lft.describe(x)} a {rgt.describe(x)}" for lft, rgt in s.intervals)
+        lines.append(f"Para {t_name} entre {sympy.sstr(s.y0)} y {sympy.sstr(s.y1)}: {parts}.")
+        latex_lines.append(
+            rf"{step_latex(s.y0)} \le {t_name} \le {step_latex(s.y1)}:\; "
+            + r";\; ".join(rf"{step_latex(lft.expr)} \le {x} \le {step_latex(rgt.expr)}" for lft, rgt in s.intervals)
         )
-    except Exception as exc:
-        return VolumeResult(
-            method=SolidMethod.SHELLS,
-            is_success=False,
-            error_message=str(exc),
-        )
+    expl = (
+        f"Con el eje {axis.label}, el método de {method.value} necesita cortes en d{t_name}. Se describe la "
+        f"región con franjas horizontales: para cada {t_name} se despeja {x} en cada curva y se toma la "
+        "sección real de la región (las rectas de los límites también pueden ser bordes). "
+        + " ".join(lines)
+    )
+    step = SolutionStep(1, f"Despeje e inversión: franjas en d{t_name}", expl, "\n".join(lines),
+                        r" \qquad ".join(latex_lines))
+    children = tuple(
+        StepNode(ids.next(), "Strip", f"Franja {k}: {t_name} ∈ [{sympy.sstr(s.y0)}, {sympy.sstr(s.y1)}]",
+                 "; ".join(f"Borde izquierdo: {lft.describe(x)}. Borde derecho: {rgt.describe(x)}."
+                           for lft, rgt in s.intervals),
+                 latex_lines[k - 1])
+        for k, s in enumerate(strips, start=1)
+    )
+    node = StepNode(ids.next(), "Inversion", f"Despejar {x} en función de {t_name}", expl,
+                    r" \qquad ".join(latex_lines), children)
+    return step, node
+
+
+def _inverted_volume(region: Region2D, axis: RevolutionAxis, method: SolidMethod) -> VolumeResult:
+    """Volumen con el método pedido integrando en la otra variable (franjas horizontales)."""
+    try:
+        if region.variable != "x":
+            raise InversionFailed("La inversión solo está disponible para regiones dadas en x.")
+        f = _ensure_parsed(region.f_expr).sympy_expr
+        g = _ensure_parsed(region.g_expr, default_zero=True).sympy_expr
+        x_sym, y_sym = sympy.Symbol("x"), sympy.Symbol("y")
+        num_a, num_b, sym_a, sym_b = _evaluate_bounds(region.a, region.b)
+        crossings = find_curve_crossings(f, g, x_sym, 0.0, num_a, num_b, method=SolidMethod.SHELLS)
+        strips = horizontal_strips(f, g, x_sym, y_sym, num_a, num_b, sym_a, sym_b, crossings)
+        pieces = _strip_pieces(strips, method, axis, y_sym, "x")
+        ids = IdGenerator()
+        step, node = _inversion_preface(region, strips, "y", method, axis, ids)
+        cuts = [(p.t0_num, p.t0, "cambia la forma de la franja horizontal") for p in pieces[1:]]
+        return _volume_from_pieces(method, axis, y_sym, pieces, cuts, preface_steps=[step],
+                                   preface_nodes=[node], ids=ids)
+    except InversionFailed as exc:
+        return VolumeResult(method=method, is_success=False,
+                            error_message=f"{exc} Use el método directo para este eje.")
+    except Exception as exc:  # noqa: BLE001
+        return VolumeResult(method=method, is_success=False, error_message=str(exc))
 
 
 def _reject_negative(res: VolumeResult) -> VolumeResult:
@@ -1952,36 +1312,63 @@ def numeric_volume(region: Region2D, axis: RevolutionAxis) -> float | None:
     la región (axis_crossing_error ya lo garantiza)."""
     import mpmath
 
-    f = _ensure_parsed(region.f_expr).sympy_expr
-    g = _ensure_parsed(region.g_expr, default_zero=True).sympy_expr
+    f = real_root_form(_ensure_parsed(region.f_expr).sympy_expr)  # ∛x real, como en la gráfica
+    g = real_root_form(_ensure_parsed(region.g_expr, default_zero=True).sympy_expr)
     var = sympy.Symbol(region.variable)
     a, b, _sa, _sb = _evaluate_bounds(region.a, region.b)
     k = sympy.nsimplify(axis.position)
-    if axis.orientation is AxisOrientation.VERTICAL:  # cortes en x: casquillos
+    # El método natural depende de la variable, no solo del eje: con una región en y y el eje
+    # vertical, los cortes dy son perpendiculares (arandelas). Antes se usaba siempre la fórmula de
+    # casquillos para un eje vertical y la referencia salía mal para regiones en y.
+    if is_method_compatible(SolidMethod.SHELLS, axis, region.variable):
         core = 2 * sympy.pi * sympy.Abs(var - k) * sympy.Abs(f - g)
         method = SolidMethod.SHELLS
-    else:  # eje horizontal: arandelas
+    else:
         core = sympy.pi * sympy.Abs((f - k) ** 2 - (g - k) ** 2)
         method = SolidMethod.WASHERS
     cuts = [float(t) for t, _ in find_curve_crossings(f, g, var, axis.position, a, b, method=method)]
-    nodes = sorted({a, b, *cuts, *np.linspace(a, b, 17).tolist()})
+    # Las esquinas de |u| y los cambios de signo de una distancia también son nodos: la cuadratura
+    # pierde ~1e-7 si una esquina cae dentro de un subintervalo.
+    kinks = [c for c, _ in sign_cut_points((f, g), var, a, b, extra=(f - k, g - k))]
+    nodes = sorted({a, b, *cuts, *kinks, *np.linspace(a, b, 17).tolist()})
     val = mpmath.quad(sympy.lambdify(var, core, "mpmath"), nodes)
     return float(val) if mpmath.isfinite(val) else None
 
 
-def _cross_check(res: VolumeResult, region: Region2D, axis: RevolutionAxis) -> VolumeResult:
-    """Rechaza un volumen simbólico proveniente de inversión que no coincide con la cuadratura independiente."""
+def _cross_check(
+    res: VolumeResult,
+    region: Region2D,
+    axis: RevolutionAxis,
+    *,
+    inverted: bool = True,
+) -> VolumeResult:
+    """Rechaza un volumen simbólico que no coincide con la cuadratura independiente.
+
+    Para la inversión a dy la tolerancia es estricta (1e-5): es el planteamiento con más riesgo.
+    Para los métodos directos solo se rechaza una diferencia grosera (1e-3), que delata un error
+    de planteamiento y no de cuadratura; las regiones con splines (``Piecewise``) no se comprueban.
+    """
     if not res.is_success or res.numeric_value is None:
         return res
-    ref = numeric_volume(region, axis)
-    if ref is None or math.isclose(res.numeric_value, ref, rel_tol=1e-5, abs_tol=1e-7):
+    if not inverted and _has_piecewise(_ensure_parsed(region.f_expr).sympy_expr,
+                                       _ensure_parsed(region.g_expr, default_zero=True).sympy_expr):
         return res
+    try:
+        ref = numeric_volume(region, axis)
+    except Exception:  # noqa: BLE001 - la cuadratura es solo una red de seguridad
+        return res
+    tol = 1e-5 if inverted else 1e-3
+    if ref is None or math.isclose(res.numeric_value, ref, rel_tol=tol, abs_tol=1e-7):
+        return res
+    origin = "El planteamiento invertido" if inverted else "El desarrollo simbólico"
     return VolumeResult(
         method=res.method,
         is_success=False,
         error_message=(
-            f"El planteamiento invertido da {res.numeric_value:.6g}, pero la cuadratura da "
-            f"{ref:.6g}. Use el método directo para este eje."
+            f"{origin} da {res.numeric_value:.6g}, pero la cuadratura da {ref:.6g}. "
+            "Use el método directo para este eje." if inverted else
+            f"{origin} da {res.numeric_value:.6g}, pero la cuadratura da {ref:.6g}. "
+            "Revise la región: el resultado simbólico no es confiable."
         ),
     )
 
@@ -1994,11 +1381,12 @@ def calculate_revolution_volume(
     *,
     _check_axis: bool = True,
 ) -> VolumeResult:
-    """Función de alto nivel para calcular el volumen según el método seleccionado o recomendado.
+    """Calcula el volumen con el método pedido o con el recomendado.
 
-    Si el método solicitado requiere cortes en la otra variable (por ejemplo, Discos/Arandelas
-    en eje vertical o Casquillos en eje horizontal) y allow_inversion es True, invierte analíticamente
-    la región mediante SymPy para resolver la integral en dy.
+    Si el método exige cortes en la otra variable (Discos/Arandelas con eje vertical o Casquillos
+    con eje horizontal) y ``allow_inversion`` es True, la región se describe por franjas
+    horizontales y se integra en ``dy`` (``integrallab.core.volume.inversion``). El resultado
+    invertido se contrasta siempre con la cuadratura independiente ``numeric_volume``.
 
     Si el eje de giro atraviesa el interior de la región, devuelve ``is_success=False``: los dos
     lados se solapan al girar y las fórmulas por método dejarían un volumen incorrecto.
@@ -2027,59 +1415,8 @@ def calculate_revolution_volume(
             )
         method = rec.recommended_method
 
-    # Si no es compatible directamente con la variable actual
     if not is_method_compatible(method, axis, region.variable):
-        if allow_inversion:
-            target_var = "y" if region.variable == "x" else "x"
-            try:
-                inv_region, expl_text, expl_latex = invert_region_to_variable(region, target_var=target_var)
-                sub_method = method
-                res = calculate_revolution_volume(
-                    inv_region, axis, method=sub_method, allow_inversion=False, _check_axis=False
-                )
-                if res.is_success:
-                    inversion_step = SolutionStep(
-                        step_number=1,
-                        title=f"Despeje e inversión analítica de variables (integración en d{target_var})",
-                        explanation=(
-                            f"Para aplicar el método de {method.value} respecto al eje {axis.label}, "
-                            f"los cortes analíticos deben formularse respecto a la variable '{target_var}'. "
-                            f"Despejamos analíticamente con SymPy:\n{expl_text}"
-                        ),
-                        expression_plain_text=expl_text,
-                        expression_latex=expl_latex,
-                    )
-                    new_steps = [inversion_step]
-                    for s in res.steps:
-                        new_steps.append(
-                            SolutionStep(
-                                step_number=len(new_steps) + 1,
-                                title=s.title,
-                                explanation=s.explanation,
-                                expression_plain_text=s.expression_plain_text,
-                                expression_latex=s.expression_latex,
-                            )
-                        )
-                    return _cross_check(_reject_negative(VolumeResult(
-                        method=method,
-                        exact_plain_text=res.exact_plain_text,
-                        exact_latex=res.exact_latex,
-                        numeric_value=res.numeric_value,
-                        integrand_plain_text=res.integrand_plain_text,
-                        integrand_latex=res.integrand_latex,
-                        integral_setup_latex=res.integral_setup_latex,
-                        is_success=True,
-                        steps=new_steps,
-                        warnings=res.warnings,
-                    )), region, axis)
-                return res
-            except InversionError as err:
-                return VolumeResult(
-                    method=method,
-                    is_success=False,
-                    error_message=str(err),
-                )
-        else:
+        if not allow_inversion:
             return VolumeResult(
                 method=method,
                 is_success=False,
@@ -2088,19 +1425,17 @@ def calculate_revolution_volume(
                     f"para la variable '{region.variable}'."
                 ),
             )
+        return _cross_check(_reject_negative(_inverted_volume(region, axis, method)), region, axis)
 
     if method == SolidMethod.DISKS:
-        return _reject_negative(calculate_disk_volume(region, axis))
+        res = calculate_disk_volume(region, axis)
     elif method == SolidMethod.WASHERS:
-        return _reject_negative(calculate_washer_volume(region, axis))
+        res = calculate_washer_volume(region, axis)
     elif method == SolidMethod.SHELLS:
-        return _reject_negative(calculate_shell_volume(region, axis))
+        res = calculate_shell_volume(region, axis)
     else:
-        return VolumeResult(
-            method=SolidMethod.DISKS,
-            is_success=False,
-            error_message=f"Método desconocido: {method}",
-        )
+        return VolumeResult(method=SolidMethod.DISKS, is_success=False, error_message=f"Método desconocido: {method}")
+    return _cross_check(_reject_negative(res), region, axis, inverted=False)
 
 
 def is_method_compatible(
@@ -2302,14 +1637,10 @@ def recommend_method(
     )
 
     if is_perpendicular:
-        # Comprobar si hay vacío interior
-        _, _, has_void, warnings_from_curves = _order_curves_by_distance(
-            f_parsed.sympy_expr,
-            g_parsed.sympy_expr,
-            var_sym,
-            axis.position,
-            num_a,
-            num_b,
+        # Hay hueco salvo que una de las curvas sea el propio eje (radio interior idénticamente 0).
+        k = sympy.nsimplify(axis.position)
+        has_void = not any(
+            sympy.simplify(c - k) == 0 for c in (f_parsed.sympy_expr, g_parsed.sympy_expr)
         )
         if not has_void:
             return MethodRecommendation(
@@ -2353,6 +1684,79 @@ def recommend_method(
 # Generación de Malla 3D para Visualización (NumPy puro)
 # ─────────────────────────────────────────────────────────────────────────────
 
+@dataclass(frozen=True)
+class SolidProfile:
+    """Perfil numérico de la región (nodos axiales y valores de f y g), calculado una vez.
+
+    Girarlo a otro ángulo es solo NumPy (``revolve_profile``): los deslizadores ya no vuelven a
+    llamar a ``lambdify`` ni evalúan las curvas punto a punto en cada cuadro (hallazgo A8).
+    """
+
+    t: np.ndarray
+    f: np.ndarray
+    g: np.ndarray
+    axis: RevolutionAxis
+
+
+def solid_profile(region: Region2D, axis: RevolutionAxis | None = None, num_axial: int = 40) -> SolidProfile:
+    """Muestrea f y g en ``num_axial`` nodos de [a, b] repartidos según la longitud de arco."""
+    axis = axis or RevolutionAxis.x_axis()
+    f_parsed = _ensure_parsed(region.f_expr)
+    g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
+    var_sym = sympy.Symbol(region.variable)
+    num_a, num_b, _, _ = _evaluate_bounds(region.a, region.b)
+    f_lamb = sympy.lambdify(var_sym, prepare_expr_for_real_eval(f_parsed.sympy_expr), modules=REAL_EVAL_MODULES)
+    g_lamb = sympy.lambdify(var_sym, prepare_expr_for_real_eval(g_parsed.sympy_expr), modules=REAL_EVAL_MODULES)
+    # Nodos axiales: el giro angular es exacto, así que solo se densifica a lo largo del perfil,
+    # siguiendo la longitud de arco de f y g. La cantidad de filas es exactamente num_axial.
+    t_dense = np.linspace(num_a, num_b, max(400, 8 * num_axial))
+    with np.errstate(all="ignore"):
+        f_dense = _evaluate_profile(f_lamb, t_dense)
+        g_dense = _evaluate_profile(g_lamb, t_dense)
+        t_vals = equidistributed_nodes(t_dense, [f_dense, g_dense], num_axial)
+        f_vals = _evaluate_profile(f_lamb, t_vals)
+        g_vals = _evaluate_profile(g_lamb, t_vals)
+    return SolidProfile(np.asarray(t_vals, dtype=float), f_vals, g_vals, axis)
+
+
+def revolve_profile(profile: SolidProfile, num_radial: int = 36, theta_max: float = 2 * math.pi) -> SolidMesh3D:
+    """Gira un perfil ya muestreado hasta ``theta_max`` (radianes). Solo NumPy: ~0,1 ms."""
+    axis = profile.axis
+    t_vals, f_vals, g_vals = profile.t, profile.f, profile.g
+    theta_bound = max(1e-4, min(2 * np.pi, float(theta_max)))
+    theta_vals = np.linspace(0, theta_bound, num_radial)
+    cos_t, sin_t = np.cos(theta_vals), np.sin(theta_vals)
+    X_in = Y_in = Z_in = None
+    with np.errstate(invalid="ignore"):
+        if axis.orientation == AxisOrientation.HORIZONTAL:
+            dist_f = np.abs(f_vals - axis.position)
+            dist_g = np.abs(g_vals - axis.position)
+            r_outer = np.maximum(dist_f, dist_g)
+            r_inner = np.minimum(dist_f, dist_g)
+            X_out = np.repeat(t_vals[:, np.newaxis], num_radial, axis=1)
+            Y_out = axis.position + np.multiply.outer(r_outer, cos_t)
+            Z_out = np.multiply.outer(r_outer, sin_t)
+            if bool(np.any(r_inner > 1e-6)):
+                X_in = X_out.copy()
+                Y_in = axis.position + np.multiply.outer(r_inner, cos_t)
+                Z_in = np.multiply.outer(r_inner, sin_t)
+        else:
+            r_axial = np.abs(t_vals - axis.position)
+            y_top = np.maximum(f_vals, g_vals)
+            y_bot = np.minimum(f_vals, g_vals)
+            X_out = axis.position + np.multiply.outer(r_axial, cos_t)
+            Z_out = np.multiply.outer(r_axial, sin_t)
+            Y_out = np.repeat(y_top[:, np.newaxis], num_radial, axis=1)
+            if bool(np.any(np.abs(y_top - y_bot) > 1e-6)):
+                X_in, Z_in = X_out.copy(), Z_out.copy()
+                Y_in = np.repeat(y_bot[:, np.newaxis], num_radial, axis=1)
+    return SolidMesh3D(
+        x_outer=X_out, y_outer=Y_out, z_outer=Z_out,
+        x_inner=X_in, y_inner=Y_in, z_inner=Z_in,
+        axis=axis, is_valid=True,
+    )
+
+
 def generate_solid_mesh(
     region: Region2D,
     axis: RevolutionAxis | None = None,
@@ -2363,26 +1767,12 @@ def generate_solid_mesh(
     """Genera matrices numéricas (X, Y, Z) en NumPy para renderizar el sólido en 3D.
 
     Parametriza la superficie de revolución de manera exacta:
-    - Rotación en eje horizontal (y = k):
-        X = t
-        Y = k + R(t) · cos(θ)
-        Z = R(t) · sin(θ)
-    - Rotación en eje vertical (x = h):
-        X = h + R(t) · cos(θ)
-        Y = y(t)
-        Z = R(t) · sin(θ)
+    - Rotación en eje horizontal (y = k):  X = t,  Y = k + R(t)·cos θ,  Z = R(t)·sin θ
+    - Rotación en eje vertical (x = h):    X = h + |t − h|·cos θ,  Y = y(t),  Z = |t − h|·sin θ
 
-    Args:
-        region: Región plana a revolucionar.
-        axis: Eje de giro (horizontal o vertical, estándar o desplazado).
-        num_radial: Número de subdivisiones angulares en [0, 2π].
-        num_axial: Número de subdivisiones en el intervalo [a, b].
-
-    Returns:
-        SolidMesh3D con matrices numéricas para superficies exterior e interior.
+    Equivale a ``revolve_profile(solid_profile(region, axis, num_axial), num_radial, theta_max)``.
     """
     axis = axis or RevolutionAxis.x_axis()
-
     if num_radial < 8 or num_axial < 2:
         return SolidMesh3D(
             x_outer=np.empty((0, 0)),
@@ -2391,98 +1781,9 @@ def generate_solid_mesh(
             is_valid=False,
             error_message="Dimensiones de malla insuficientes (mínimo 8 radiales y 2 axiales).",
         )
-
     try:
-        f_parsed = _ensure_parsed(region.f_expr)
-        g_parsed = _ensure_parsed(region.g_expr, default_zero=True)
-        var_sym = sympy.Symbol(region.variable)
-        num_a, num_b, _, _ = _evaluate_bounds(region.a, region.b)
-
-        # Lambdificar funciones a NumPy/math para evaluación vectorial rápida
-        f_real = prepare_expr_for_real_eval(f_parsed.sympy_expr)
-        g_real = prepare_expr_for_real_eval(g_parsed.sympy_expr)
-        f_lamb = sympy.lambdify(var_sym, f_real, modules=REAL_EVAL_MODULES)
-        g_lamb = sympy.lambdify(var_sym, g_real, modules=REAL_EVAL_MODULES)
-
-        # Nodos axiales en [a, b]: el giro angular es exacto, así que solo se densifica
-        # a lo largo del perfil, siguiendo la longitud de arco de f y g. La cantidad de
-        # filas sigue siendo exactamente num_axial.
-        t_dense = np.linspace(num_a, num_b, max(400, 8 * num_axial))
-        with np.errstate(all="ignore"):
-            f_dense = _evaluate_profile(f_lamb, t_dense)
-            g_dense = _evaluate_profile(g_lamb, t_dense)
-        t_vals = equidistributed_nodes(t_dense, [f_dense, g_dense], num_axial)
-
-        # Muestrear el ángulo angular en [0, theta_max] (permite apertura/barrido interactivo)
-        theta_bound = max(1e-4, min(2 * np.pi, float(theta_max)))
-        theta_vals = np.linspace(0, theta_bound, num_radial)
-        T_grid, Theta_grid = np.meshgrid(t_vals, theta_vals, indexing="ij")
-
-        # Evaluar valores de las funciones sobre el eje t
-        f_vals = np.array([float(np.real(f_lamb(t))) if np.isreal(f_lamb(t)) else np.nan for t in t_vals])
-        g_vals = np.array([float(np.real(g_lamb(t))) if np.isreal(g_lamb(t)) else np.nan for t in t_vals])
-
-        if axis.orientation == AxisOrientation.HORIZONTAL:
-            # Eje horizontal y = k
-            dist_f = np.abs(f_vals - axis.position)
-            dist_g = np.abs(g_vals - axis.position)
-
-            r_outer_1d = np.maximum(dist_f, dist_g)
-            r_inner_1d = np.minimum(dist_f, dist_g)
-
-            # Expandir a rejilla 2D (num_axial, num_radial)
-            R_outer = np.repeat(r_outer_1d[:, np.newaxis], num_radial, axis=1)
-            R_inner = np.repeat(r_inner_1d[:, np.newaxis], num_radial, axis=1)
-
-            # Parametrización en eje horizontal
-            X_out = T_grid
-            Y_out = axis.position + R_outer * np.cos(Theta_grid)
-            Z_out = R_outer * np.sin(Theta_grid)
-
-            # Superficie interior si existe hueco significativo
-            has_inner = bool(np.any(r_inner_1d > 1e-6))
-            if has_inner:
-                X_in = T_grid
-                Y_in = axis.position + R_inner * np.cos(Theta_grid)
-                Z_in = R_inner * np.sin(Theta_grid)
-            else:
-                X_in = Y_in = Z_in = None
-
-        else:
-            # Eje vertical x = h
-            # En rotación sobre x = h con variable x:
-            # El radio horizontal respecto al eje es |x - h|
-            r_axial = np.abs(t_vals - axis.position)
-            R_grid = np.repeat(r_axial[:, np.newaxis], num_radial, axis=1)
-
-            # Superficie exterior: generada por la curva superior
-            y_top_1d = np.maximum(f_vals, g_vals)
-            y_bot_1d = np.minimum(f_vals, g_vals)
-
-            Y_out = np.repeat(y_top_1d[:, np.newaxis], num_radial, axis=1)
-            X_out = axis.position + R_grid * np.cos(Theta_grid)
-            Z_out = R_grid * np.sin(Theta_grid)
-
-            # Superficie inferior / interior generada por la curva inferior
-            has_inner = bool(np.any(np.abs(y_top_1d - y_bot_1d) > 1e-6))
-            if has_inner:
-                Y_in = np.repeat(y_bot_1d[:, np.newaxis], num_radial, axis=1)
-                X_in = axis.position + R_grid * np.cos(Theta_grid)
-                Z_in = R_grid * np.sin(Theta_grid)
-            else:
-                X_in = Y_in = Z_in = None
-
-        return SolidMesh3D(
-            x_outer=X_out,
-            y_outer=Y_out,
-            z_outer=Z_out,
-            x_inner=X_in,
-            y_inner=Y_in,
-            z_inner=Z_in,
-            axis=axis,
-            is_valid=True,
-        )
-    except Exception as exc:
+        return revolve_profile(solid_profile(region, axis, num_axial), num_radial, theta_max)
+    except Exception as exc:  # noqa: BLE001
         return SolidMesh3D(
             x_outer=np.empty((0, 0)),
             y_outer=np.empty((0, 0)),

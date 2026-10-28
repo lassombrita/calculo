@@ -11,6 +11,7 @@ Estos archivos se distribuyen tal cual dentro de `integrallab/resources/`, cada 
 | [Three.js](https://github.com/mrdoob/three.js) | r160 | MIT | three.js authors | `resources/js/three.module.min.js` | `resources/js/LICENSE_THREEJS.txt` |
 | OrbitControls (complemento de Three.js) | r160 | MIT | three.js authors | `resources/js/OrbitControls.js` | `resources/js/LICENSE_THREEJS.txt` |
 | [MathLive](https://github.com/arnog/mathlive) | 0.111.1 | MIT | Arno Gourdol | `resources/mathlive/mathlive.min.js` | `resources/mathlive/LICENSE_MATHLIVE.txt` |
+| [MathJax](https://www.mathjax.org/) | 3.2.2 (componente `es5/tex-svg-full.js` del paquete npm `mathjax`) | Apache-2.0 | The MathJax Consortium | `resources/mathjax/tex-svg-full.js` | `resources/mathjax/LICENSE_MATHJAX.txt` |
 | [Fuentes KaTeX](https://github.com/KaTeX/katex-fonts) (incluidas en el paquete de MathLive) | la de MathLive 0.111.1 | MIT | Khan Academy | `resources/mathlive/fonts/KaTeX_*.woff2` | `resources/mathlive/fonts/LICENSE_KATEX_FONTS.txt` |
 
 ## Dependencias instaladas con pip
@@ -19,7 +20,7 @@ No se copian al repositorio; se instalan con `pip install -e ".[dev]"`. Versione
 
 | Paquete | Versión | Licencia (según sus metadatos) | Uso |
 | --- | --- | --- | --- |
-| SymPy | 1.14.0 | BSD | Cálculo simbólico |
+| SymPy | 1.14.0 | BSD | Cálculo simbólico y reglas de integración del desglose (`manualintegrate`) |
 | mpmath | 1.3.0 | BSD | Cuadratura numérica (dependencia de SymPy) |
 | NumPy | 2.5.4 | BSD-3-Clause, con partes 0BSD, MIT, Zlib y CC0-1.0 | Mallas y muestreo |
 | Matplotlib | 3.11.2 | Licencia de Matplotlib (basada en la PSF) | Gráficas 2D, respaldo 3D y fórmulas de los reportes |
@@ -29,5 +30,6 @@ No se copian al repositorio; se instalan con `pip install -e ".[dev]"`. Versione
 ## Notas para distribuir
 
 - **MIT (Three.js, MathLive, fuentes KaTeX):** conservar el aviso de copyright y el texto de la licencia junto a los archivos. Ya están en el repositorio y `pyproject.toml` los empaqueta (`resources/**/*`).
+- **Apache-2.0 (MathJax):** conservar el texto de la licencia junto al archivo (ya está) y no presentar MathJax como obra propia. El archivo se distribuye sin modificar; si algún día se modifica, la licencia exige indicarlo en el propio archivo.
 - **LGPL-3.0 (PySide6/Qt):** si se distribuye un ejecutable (por ejemplo, con PyInstaller), Qt debe quedar enlazado dinámicamente y reemplazable por el usuario, y hay que incluir el texto de la licencia. Conviene revisar los términos exactos antes de publicar un instalador.
 - Al actualizar un componente, cambiar aquí la versión y reemplazar su archivo de licencia. Para MathLive, ver `docs/EDITOR_VISUAL.md`, «Actualizar MathLive».
