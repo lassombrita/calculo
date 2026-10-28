@@ -3,7 +3,11 @@ name: Build and Release IntegralLab
 on:
   release:
     types: [created]
-  workflow_dispatch: # Permite ejecutarlo manualmente desde la pestaña "Actions"
+  workflow_dispatch: # Permite ejecutarlo manualmente
+
+# ESTA ES LA LÍNEA CLAVE QUE CORRIGE EL ERROR DE PERMISOS
+permissions:
+  contents: write 
 
 jobs:
   build-windows:
@@ -16,7 +20,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11' # Puedes ajustarlo a la versión que prefieras
+        python-version: '3.11' # Versión de Python para compilar
 
     - name: Install dependencies
       run: |
@@ -25,9 +29,6 @@ jobs:
         pip install pyinstaller
 
     - name: Build EXE with PyInstaller
-      # --onefile: Un solo ejecutable
-      # --windowed: Oculta la consola negra
-      # --add-data: Empaqueta todos los recursos de integrallab (MathJax, UI, etc.)
       run: |
         pyinstaller --noconfirm --onefile --windowed --name "IntegralLab" --add-data "integrallab;integrallab" integrallab/__main__.py
 
@@ -37,4 +38,3 @@ jobs:
         files: dist/IntegralLab.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
