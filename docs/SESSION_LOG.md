@@ -1041,3 +1041,29 @@ Aplicar el parche opcional de limpieza `integrallab-limpieza.patch` solicitado y
 ### Verificación
 - **522 pruebas pasando y 2 omitidas** (la de términos privados `INTEGRALLAB_PRIVATE_TERMS` y la condición de QtWebEngine offscreen). 0 fallos.
 - Arranque y cierre limpio de la aplicación de escritorio (`python -m integrallab`).
+
+
+---
+
+## Sesión 24 — Automatización de compilación y Release con GitHub Actions
+
+**Fecha:** 2026-10-28  
+**Entorno:** Windows, Python 3.14.6, PySide6 6.10.x.
+
+### Objetivo
+Configurar el flujo de trabajo de GitHub Actions para compilar automáticamente el ejecutable independiente de Windows (`IntegralLab.exe`) mediante PyInstaller (sin consola negra y con recursos empaquetados) y publicarlo en las Releases de GitHub.
+
+### Cambios realizados
+1. **Flujo de GitHub Actions (`.github/workflows/release.yml`):**
+   - Disparadores en `release` (creación) y `workflow_dispatch` (ejecución manual desde GitHub).
+   - Entorno Windows (`windows-latest`), configuración de Python 3.11.
+   - Instalación de dependencias con `pip` y `pyinstaller`.
+   - Empaquetado en un único ejecutable (`--onefile`, `--windowed`, `--add-data "integrallab;integrallab"`).
+   - Publicación del artefacto `dist/IntegralLab.exe` en GitHub Releases con `action-gh-release@v2`.
+2. **Creación de manifiesto `requirements.txt`:**
+   - Lista explícita de dependencias base (`sympy>=1.12`, `numpy>=1.24`, `matplotlib>=3.8`, `PySide6>=6.6`, `mpmath>=1.3`) derivada de `pyproject.toml` para que la acción en GitHub Actions resuelva las dependencias mediante `pip install -r requirements.txt`.
+3. **Documentación:**
+   - Actualización de [`docs/PROJECT_STATUS.md`](PROJECT_STATUS.md) y registro en [`docs/SESSION_LOG.md`](SESSION_LOG.md).
+
+### Verificación
+- Verificación de privacidad con `pytest tests/test_privacy.py` (pasando al 100%).

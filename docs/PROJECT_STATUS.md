@@ -1,13 +1,14 @@
 # Estado del proyecto — IntegralLab
 
 > Este archivo se actualiza **al terminar cada sesión** de trabajo. El historial detallado está en [`SESSION_LOG.md`](SESSION_LOG.md).
-> Última actualización: **2026-10-27** — Sesión 23: aplicación y verificación completa de `integrallab-auditoria-2026-10-27.patch` e `integrallab-limpieza.patch`. **522 pruebas pasando, 2 omitidas** (la de términos privados si no se define `INTEGRALLAB_PRIVATE_TERMS`; y omisión condicional de entorno sin pantalla).
+> Última actualización: **2026-10-28** — Sesión 24: automatización de compilación y empaquetado (.exe) en GitHub Actions (`.github/workflows/release.yml`) y manifiesto `requirements.txt`. **522 pruebas pasando, 2 omitidas** (la de términos privados si no se define `INTEGRALLAB_PRIVATE_TERMS`; y omisión condicional de entorno sin pantalla).
 
 ## Resumen
 
 - Funciona de punta a punta: entrada (texto o editor visual), región 2D, integral y área, sólido 3D (WebGL o Matplotlib) con deslizadores, volumen por los tres métodos con inversión a `dy` por franjas, desarrollo paso a paso interactivo (MathJax sin conexión) e imprimible (PDF).
 - Todo volumen se contrasta con una cuadratura independiente; los 11 casos de inversión de la auditoría coinciden con su forma cerrada.
 - Código heredado sin uso e informes de estado obsoletos retirados completamente con `integrallab-limpieza.patch`.
+- Automatización CI/CD con GitHub Actions (`.github/workflows/release.yml`) para compilación de ejecutable portable (`.exe` sin consola) con PyInstaller al crear releases o por ejecución manual.
 
 ## Hallazgos de las auditorías
 
