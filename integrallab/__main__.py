@@ -1,3 +1,5 @@
+import multiprocessing  # necesario en ejecutables congelados (PyInstaller) de Windows
+from PySide6.QtWidgets import QApplication  # ventana principal
 from integrallab.ui.theme import apply_theme
 from integrallab.ui.main_window import MainWindow
 from pathlib import Path

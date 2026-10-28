@@ -11,15 +11,7 @@ No dependen de ``integrallab.core.solids`` (que los usa), ni de Qt. Las funcione
 (``calculate_revolution_volume`` y compañía) siguen en ``integrallab.core.solids``.
 """
 
-from integrallab.core.operations import _real_definite_integral, area_between  # noqa: F401 - Funciones internas no expuestas
 from integrallab.core.volume.pieces import real_branch, sample, sign_cut_points
 from integrallab.core.volume.inversion import Edge, Strip, horizontal_strips
 
-__all__ = [
-    "Edge",
-    "Strip", 
-    "horizontal_strips",
-    "real_branch",
-    "sample",
-    "sign_cut_points",
-]
+__all__ = ["Edge", "Strip", "horizontal_strips", "real_branch", "sample", "sign_cut_points"]

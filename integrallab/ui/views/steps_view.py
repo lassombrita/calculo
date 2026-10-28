@@ -1,483 +1,220 @@
-"""
-Vista de pasos tipo Photomath (UI PySide6 + WebEngineView).
+"""Vista interactiva del desarrollo paso a paso («estilo Photomath»).
 
-Este módulo implementa la vista interactiva estilo Photomath que:
-- Renderiza árbol de pasos en QWebEngineView con MathJax.
-- Soporta clic para expandir/colapsar sub-pasos.
-- Permite navegación por fórmulas y explicaciones.
+Responsabilidad:
+Mostrar el árbol ``VolumeResult.step_tree`` (``integrallab.core.steps.StepNode``) en una página
+local con MathJax 3 sin conexión (``resources/steps``). Las partes de cada fórmula marcadas con
+``\\class{step-ID}{…}`` se vuelven botones: al tocarlas se despliega, justo debajo, el paso que
+explica cómo se obtuvieron (y ese paso puede tener a su vez partes clicables).
 
-Arquitectura:
-  - WebEngineView cargando HTML local con MathJax offline.
-  - QWebChannel puente entre Python y JavaScript del WebView.
-  
-Separación de capas: NO importa SymPy directamente aquí; usa solo PySide6.
+Flujo de eventos:
 
-Uso desde UI principal:
-    from integrallab.ui.views.steps_view import StepsView
-    
-    steps_view = StepsView(parent=self)
-    self.add_widget(steps_view)
-    
-    # Cargar árbol generado por SymPy
-    json_str = tree.to_json()
-    steps_view.load_tree(json_str)
+- Python → JavaScript: ``set_tree`` serializa el árbol a JSON y llama ``IntegralSteps.render``.
+  Si la página aún carga, el árbol queda pendiente y se envía cuando MathJax avisa ``ready``.
+- JavaScript → Python (``QWebChannel``, objeto ``bridge``): ``ready()``, ``rendered(n)`` y
+  ``stepToggled(id, abierto)``; este último se reexpone como la señal ``stepToggled``.
 
-    # Expandir paso específico
-    steps_view.expand_step("step-3-result")
-
+La vista no importa SymPy: recibe nodos ya construidos por el dominio. Todo texto se inserta en
+la página con ``textContent`` y la navegación fuera de ``resources/`` está bloqueada.
 """
 
 from __future__ import annotations
-import sys
-import os
-from typing import Optional, Callable
-from pathlib import Path
 
-# PySide6 (UI gráfico)
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QSplitter, QLabel, QPushButton,
-    QMessageBox, QFrame
-)
-from PySide6.QtCore import Qt, Signal, QObject, Property, Slot
-from PySide6.QtWebChannel import QWebChannel
+import json
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from PySide6.QtCore import QObject, QTimer, QUrl, Signal, Slot
+from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+if TYPE_CHECKING:  # la vista no importa el dominio en tiempo de ejecución (ni SymPy)
+    from integrallab.core.steps.model import StepNode
+
+try:
+    from PySide6.QtWebChannel import QWebChannel
+    from PySide6.QtWebEngineCore import QWebEnginePage
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+
+    WEBENGINE_AVAILABLE = True
+except ImportError:  # pragma: no cover - instalaciones sin QtWebEngine
+    WEBENGINE_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
+RESOURCES_DIR = Path(__file__).resolve().parents[2] / "resources"
+PAGE_PATH = RESOURCES_DIR / "steps" / "index.html"
+MATHJAX_PATH = RESOURCES_DIR / "mathjax" / "tex-svg-full.js"
+
+READY_TIMEOUT_MS = 20_000
+
+
+def steps_view_support() -> tuple[bool, str]:
+    """(disponible, motivo): la vista necesita QtWebEngine, la página y MathJax."""
+    if not WEBENGINE_AVAILABLE:
+        return False, "QtWebEngine no está instalado (PySide6-WebEngine)."
+    if not PAGE_PATH.exists() or not MATHJAX_PATH.exists():
+        return False, "Faltan los archivos del desglose interactivo en integrallab/resources."
+    return True, ""
+
+
+class _StepsBridge(QObject):
+    """Objeto publicado en la página como ``bridge`` (nombres en camelCase para JavaScript)."""
+
+    def __init__(self, owner: StepsView) -> None:
+        super().__init__(owner)
+        self._owner = owner
+
+    @Slot()
+    def ready(self) -> None:
+        self._owner._on_ready()
+
+    @Slot(int)
+    def rendered(self, count: int) -> None:
+        self._owner.rendered.emit(int(count))
+
+    @Slot(str, bool)
+    def stepToggled(self, node_id: str, is_open: bool) -> None:  # noqa: N802 - API de JavaScript
+        self._owner.stepToggled.emit(node_id, bool(is_open))
+
+
+if WEBENGINE_AVAILABLE:
+
+    class _LocalPage(QWebEnginePage):  # type: ignore[misc]
+        """Página que solo navega dentro de ``resources/`` y reenvía la consola al logging."""
+
+        def acceptNavigationRequest(self, url, nav_type, is_main_frame):  # noqa: N802
+            local = url.isLocalFile() and Path(url.toLocalFile()).resolve().is_relative_to(RESOURCES_DIR)
+            return bool(local or url.scheme() in ("qrc", "data", "about"))
+
+        def javaScriptConsoleMessage(self, level, message, line, source):  # noqa: N802
+            lv = QWebEnginePage.JavaScriptConsoleMessageLevel
+            py_level = {
+                lv.InfoMessageLevel: logging.DEBUG,
+                lv.WarningMessageLevel: logging.WARNING,
+                lv.ErrorMessageLevel: logging.ERROR,
+            }.get(level, logging.INFO)
+            logger.log(py_level, "JS %s:%s %s", Path(str(source)).name, line, message)
 
 
 class StepsView(QWidget):
-    """
-    Vista de pasos tipo Photomath.
+    """Desglose interactivo del cálculo.
 
-    Características:
-      - Renderizado de fórmulas con MathJax offline.
-      - Interactividad clic para expandir/colapsar.
-      - Navegación por paso a paso.
-    
     Señales:
-      - step_expanded(step_id): Se emite cuando se expande un paso.
-      - step_collapsed(step_id): Se emite cuando se colapsa un paso.
-      - step_selected(step_id): Se emite cuando el usuario selecciona un paso.
+        ready(): la página y MathJax están listos.
+        rendered(n): se mostró un árbol de ``n`` nodos (0 si se limpió la vista).
+        stepToggled(id, abierto): el estudiante desplegó o plegó un paso.
+        loadFailed(motivo): la página no cargó; la ventana debe usar la vista imprimible.
     """
 
-    # Señales para comunicación bidireccional con UI principal
-    step_expanded = Signal(str)  # step_id del paso expandido
-    step_collapsed = Signal(str) # step_id del paso colapsado
-    step_selected = Signal(str)  # step_id seleccionado por el usuario
+    ready = Signal()
+    rendered = Signal(int)
+    stepToggled = Signal(str, bool)
+    loadFailed = Signal(str)
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        
-        self.setWindowTitle("Desarrollo tipo Photomath")
-        self.setMinimumSize(800, 600)
-        
-        # WebView para renderizado web con MathJax
-        from PySide6.QtWebEngineWidgets import QWebEngineView
-        self.web_view = QWebEngineView()
-        self.web_view.setMinimumSize(400, 300)
-        
-        # Canal QWebChannel para comunicación bidireccional
-        self.channel = QWebChannel(self)
-        self.web_view.setObject("PythonBridge", PythonBridge(self))
-        self.web_view.channel(self.channel)
-        
-        # Cargar página inicial con MathJax offline
-        self._load_initial_page()
-        
-        # Layout principal
+        self._is_ready = False
+        self._pending: dict[str, Any] | None = None
+        self._failed = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.web_view)
-        
-        # Barra de herramientas opcional
-        tool_layout = QHBoxLayout()
-        self.back_button = QPushButton("⬅️ Atrás")
-        self.back_button.clicked.connect(self._go_back)
-        self.back_button.setDisabled(True)
-        tool_layout.addWidget(self.back_button)
-        
-        self.expand_button = QPushButton("Expandir todo")
-        self.expand_button.clicked.connect(self.expand_all_steps)
-        tool_layout.addWidget(self.expand_button)
-        
-        tool_layout.addStretch()
-        
-        self.info_label = QLabel("Haz clic en una fórmula para ver el desarrollo paso a paso.")
-        self.info_label.setWordWrap(True)
-        tool_layout.addWidget(self.info_label)
-        
-        layout.addLayout(tool_layout)
 
-    def _load_initial_page(self):
-        """Cargar página inicial con MathJax offline y estructura básica."""
-        # Ruta relativa a este archivo para resources/steps/mathjax.min.js
-        base_dir = str(Path(__file__).parent.parent.parent.parent)  # integrallab/
-        
-        # Usar CDN de MathJax si no hay offline disponible, o path local si existe
-        mathjax_url = (
-            "https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.min.js"
-        )
-        
-        html_content = f"""
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <title>Pasos tipo Photomath</title>
-            <!-- MathJax 3.2.2 -->
-            <script src="{mathjax_url}"></script>
-            <style>
-                body {{
-                    font-family: 'Segoe UI', Arial, sans-serif;
-                    background-color: #f5f5f5;
-                    color: #333;
-                    padding: 20px;
-                }}
-                
-                .step-container {{
-                    max-width: 600px;
-                    margin: 20px auto;
-                    padding: 10px;
-                }}
-                
-                /* Estilos de fórmulas interactivas */
-                .formula-step {{
-                    border-left: 3px solid #007bff;
-                    background-color: white;
-                    margin: 15px 0;
-                    padding: 15px;
-                    cursor: pointer;
-                    transition: box-shadow 0.2s;
-                }}
-                
-                .formula-step:hover {{
-                    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-                    border-left-color: #0056b3;
-                }}
-                
-                /* Estado expandido */
-                .expanded .sub-steps {{
-                    display: block;
-                }}
-                
-                .sub-steps {{
-                    display: none;
-                }}
-                
-                /* Texto explicativo */
-                .text-step {{
-                    padding: 12px;
-                    margin: 10px 0;
-                    background-color: #e8f4f8;
-                    border-radius: 6px;
-                    font-style: italic;
-                }}
-                
-                /* Fórmula renderizada */
-                .rendered-formula {{
-                    font-size: 1.2em;
-                    display: block;
-                    margin: 10px 0;
-                    text-align: center;
-                    padding: 8px;
-                    background-color: #fafafa;
-                    border-radius: 4px;
-                }}
-                
-                .step-label {{
-                    font-weight: bold;
-                    color: #007bff;
-                    margin-bottom: 5px;
-                }}
-                
-                .collapsed-indicator {{
-                    display: inline-block;
-                    width: 12px;
-                    height: 12px;
-                    background-color: #007bff;
-                    border-radius: 50%;
-                    margin-right: 5px;
-                }}
-                
-                /* Imágenes renderizadas */
-                .formula-img {{
-                    max-width: 100%;
-                    height: auto;
-                    display: block;
-                    margin: 10px auto;
-                    border-radius: 4px;
-                }}
-            </style>
-        </head>
-        <body>
-            <div id="photomath-root" class="step-container">
-                <!-- Las fórmulas se inyectarán aquí vía QWebChannel -->
-            </div>
-            
-            <script>
-                // Exponer función para expandir/colapsar pasos desde JavaScript
-                window.stepActions = {{
-                    expandStep: function(stepId) {{
-                        const container = document.getElementById('photomath-root');
-                        // Buscar elementos con el ID correspondiente
-                        const stepElement = container.querySelector(`[data-step-id="${stepId}"]`);
-                        if (stepElement) {{
-                            stepElement.classList.toggle('expanded');
-                            return stepElement.classList.contains('expanded');
-                        }}
-                        return false;
-                    }},
-                    collapseStep: function(stepId) {{
-                        const container = document.getElementById('photomath-root');
-                        const stepElement = container.querySelector(`[data-step-id="${stepId}"]`);
-                        if (stepElement && !stepElement.classList.contains('collapsed')) {{
-                            stepElement.classList.remove('expanded');
-                            return true;
-                        }}
-                        return false;
-                    }},
-                    toggleStep: function(stepId) {{
-                        const container = document.getElementById('photomath-root');
-                        const stepElement = container.querySelector(`[data-step-id="${stepId}"]`);
-                        if (stepElement) {{
-                            if (stepElement.classList.contains('expanded')) {{
-                                stepElement.classList.remove('expanded');
-                            }} else {{
-                                // Expandir solo este paso y sus padres necesarios
-                                stepElement.classList.add('expanded');
-                            }}
-                            return true;
-                        }}
-                        return false;
-                    }},
-                    expandAll: function() {{
-                        const steps = container.querySelectorAll('.formula-step');
-                        steps.forEach(step => {{
-                            if (!step.classList.contains('collapsed')) {{
-                                step.classList.add('expanded');
-                            }}
-                        }});
-                        return steps.length;
-                    }},
-                    collapseAll: function() {{
-                        const steps = container.querySelectorAll('.formula-step');
-                        steps.forEach(step => {{
-                            if (step.classList.contains('expanded')) {{
-                                step.classList.remove('expanded');
-                            }}
-                        }});
-                        return true;
-                    }},
-                }};
-                
-                // Exponer evento de clic en fórmula al puente de Python
-                window.addEventListener('click', function(event) {{
-                    const target = event.target.closest('.formula-step');
-                    if (target) {{
-                        const stepId = target.getAttribute('data-step-id');
-                        if (window.stepActions && window.stepActions.toggleStep) {{
-                            window.stepActions.toggleStep(stepId);
-                        }}
-                    }}
-                }});
-                
-                // Exponer evento de selección de paso
-                document.addEventListener('click', function(event) {{
-                    const target = event.target;
-                    if (target.classList && target.classList.contains('formula-step')) {{
-                        window.lastSelectedStep = target.getAttribute('data-step-id');
-                    }}
-                }});
-            </script>
-        </body>
-        </html>
-        """
-        
-        self.web_view.setHtml(html_content)
+        available, reason = steps_view_support()
+        if not available:
+            self.view = None
+            self._failed = True
+            QTimer.singleShot(0, lambda: self.loadFailed.emit(reason))
+            return
 
-    def load_tree(self, json_str: str):
-        """Carga árbol de pasos desde JSON (String compacto o dict)."""
-        try:
-            import json
-            tree_dict = json.loads(json_str)
-            
-            # Renderizar árbol en HTML para WebView
-            html = self._tree_to_html(tree_dict)
-            self.web_view.setHtml(html)
-            
-            # Habilitar botones de navegación
-            self.back_button.setDisabled(False)
-            
-        except Exception as e:
-            print(f"[StepsView] Error cargando árbol JSON: {e}")
-            QMessageBox.critical(self, "Error", f"Error al cargar el árbol de pasos:\n{e}")
+        self.view = QWebEngineView(self)
+        self._page = _LocalPage(self.view)
+        self.view.setPage(self._page)
+        self._bridge = _StepsBridge(self)
+        self._channel = QWebChannel(self._page)
+        self._channel.registerObject("bridge", self._bridge)
+        self._page.setWebChannel(self._channel)
+        self.view.loadFinished.connect(self._on_load_finished)
+        layout.addWidget(self.view)
 
-    def _tree_to_html(self, tree_dict: dict) -> str:
-        """Convierte diccionario del árbol a HTML renderizado."""
-        import json
-        
-        # Función recursiva para convertir paso a HTML
-        def step_to_html(step: dict, depth: int = 0) -> str:
-            step_type = step.get("step_type", "formula")
-            step_id = step.get("step_id", f"step-{depth}")
-            
-            if step_type == "formula":
-                latex = step.get("formula_metadata", {}).get("latex", "")
-                image_b64 = step.get("formula_metadata", {}).get("image_base64", None)
-                
-                if image_b64:
-                    # Usar imagen renderizada offline
-                    html = f"""
-                    <div class="formula-step" data-step-id="{step_id}">
-                        <div class="step-label">{step.get('title', 'Paso')}</div>
-                        <img src="data:image/png;base64,{image_b64}" class="formula-img">
-                    </div>"""
-                else:
-                    # Usar MathJax inline
-                    latex_escaped = latex.replace('\\', '\\\\')
-                    html = f"""
-                    <div class="formula-step" data-step-id="{step_id}">
-                        <div class="step-label">{step.get('title', 'Paso')}</div>
-                        $$
-                        {{:{latex_escaped}
-                        }}
-                    </div>"""
-                
-                # Sub-pasos (hijos) si están expandidos
-                children = step.get("children", [])
-                if len(children) > 0:
-                    is_expanded = step.get("is_expanded", False)
-                    sub_html = ""
-                    for i, child in enumerate(children):
-                        sub_html += f"""
-                        <div class="sub-steps">
-                            {step_to_html(child, depth + 1)}
-                        </div>"""
-                    
-                    html = html.replace("</div>", f"{sub_html}</div>", 1)
-                
-                return html
-            
-            elif step_type == "text":
-                content = step.get("description", "")
-                # Renderizar texto con posibles fórmulas incrustadas
-                html = f"""
-                <div class="text-step" data-step-id="{step_id}">
-                    {content.replace('\\n', '<br>').replace('$$', '').replace('$$', '')}
-                </div>"""
-                return html
-            
-            # Default: mostrar como fórmula si no hay tipo específico
-            latex = str(step) if isinstance(step, dict) else ""
-            latex_escaped = latex.replace('\\', '\\\\')
-            return f"""
-            <div class="formula-step" data-step-id="{step_id}">
-                $${{:{latex_escaped}}}$$
-            </div>"""
-        
-        # Convertir todo el árbol
-        root = tree_dict.get("root", tree_dict)  # Manejar ambos formatos
-        html_content = step_to_html(root, depth=0)
-        
-        return f"""
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <title>Pasos tipo Photomath</title>
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.min.js"></script>
-            <style>
-                body {{ font-family: 'Segoe UI', Arial, sans-serif; background-color: #f5f5f5; }}
-                .step-container {{ max-width: 700px; margin: auto; padding: 20px; }}
-                .formula-step {{ border-left: 3px solid #007bff; background-color: white; margin: 15px 0; padding: 15px; cursor: pointer; }}
-                .formula-step:hover {{ box-shadow: 0 4px 8px rgba(0,0,0,0.1); border-left-color: #0056b3; }}
-                .sub-steps {{ display: {('block' if tree_dict.get('is_expanded', False) else 'none')}; }}
-                .text-step {{ padding: 12px; margin: 10px 0; background-color: #e8f4f8; border-radius: 6px; font-style: italic; }}
-            </style>
-        </head>
-        <body>
-            {html_content}
-        </body>
-        </html>"""
+        self._ready_timer = QTimer(self)
+        self._ready_timer.setSingleShot(True)
+        self._ready_timer.timeout.connect(self._on_ready_timeout)
+        self._ready_timer.start(READY_TIMEOUT_MS)
+        self.view.load(QUrl.fromLocalFile(str(PAGE_PATH)))
 
-    def expand_step(self, step_id: str):
-        """Expande paso específico (a través de QWebChannel)."""
-        try:
-            self.web_view.evaluateJavaScript(
-                f"window.stepActions.expandStep('{step_id}')"
-            )
-            self.step_expanded.emit(step_id)
-        except Exception as e:
-            print(f"[StepsView] Error expandiendo paso {step_id}: {e}")
+    # ── API pública ─────────────────────────────────────────────────────────
 
-    def collapse_step(self, step_id: str):
-        """Colapsa paso específico."""
-        try:
-            self.web_view.evaluateJavaScript(
-                f"window.stepActions.collapseStep('{step_id}')"
-            )
-            self.step_collapsed.emit(step_id)
-        except Exception as e:
-            print(f"[StepsView] Error colapsando paso {step_id}: {e}")
+    @property
+    def is_ready(self) -> bool:
+        return self._is_ready
 
-    def expand_all_steps(self):
-        """Expande todos los pasos."""
-        try:
-            self.web_view.evaluateJavaScript("window.stepActions.expandAll()")
-        except Exception as e:
-            print(f"[StepsView] Error expandiendo todos los pasos: {e}")
+    @property
+    def failed(self) -> bool:
+        return self._failed
 
-    def collapse_all_steps(self):
-        """Colapsa todos los pasos."""
-        try:
-            self.web_view.evaluateJavaScript("window.stepActions.collapseAll()")
-        except Exception as e:
-            print(f"[StepsView] Error colapsando todos los pasos: {e}")
+    def set_tree(self, tree: StepNode | None, *, title: str = "", meta: str = "", message: str = "") -> None:
+        """Muestra un árbol (o un mensaje si ``tree`` es ``None``)."""
+        payload: dict[str, Any] = {
+            "tree": tree.to_dict() if tree is not None else None,
+            "title": title,
+            "meta": meta,
+            "message": message,
+        }
+        if not self._is_ready:
+            self._pending = payload
+            return
+        self._send(payload)
 
-    def _go_back(self):
-        """Volver a la vista anterior (placeholder para navegación)."""
-        QMessageBox.information(self, "Navegación", "Función de navegación implementada en integración futura.")
+    def clear(self, message: str = "") -> None:
+        self.set_tree(None, message=message)
 
+    def reveal(self, node_id: str) -> None:
+        """Despliega un paso (y sus antepasados) y lo lleva a la vista."""
+        self._run(f"IntegralSteps.reveal({json.dumps(node_id)})")
 
-# ============================================================================
-# Puente QWebChannel entre Python y JavaScript del WebView
-# ============================================================================
+    def expand_all(self, expanded: bool = True) -> None:
+        self._run("IntegralSteps.expandAll()" if expanded else "IntegralSteps.collapseAll()")
 
-class PythonBridge(QObject):
-    """Puente bidireccional entre Python y JavaScript para comunicación UI."""
-    
-    OBJECT_NAME = "PythonBridge"
-    
-    # Métodos disponibles desde JavaScript en el WebView
-    def load_tree(self, json_str: str) -> None:
-        """Carga árbol de pasos desde JSON (llamado desde JS)."""
-        print(f"[PythonBridge] Cargando árbol desde JS: {json_str[:100]}...")
-        # En producción: enviar al controlador principal para actualizar vista
-    
-    def expand_step(self, step_id: str) -> bool:
-        """Expande paso específico (llamado desde JS)."""
-        print(f"[PythonBridge] Expandiendo paso: {step_id}")
-        return True
-    
-    def collapse_step(self, step_id: str) -> bool:
-        """Colapsa paso específico (llamado desde JS)."""
-        print(f"[PythonBridge] Colapsando paso: {step_id}")
-        return True
+    def run_javascript(self, code: str, callback: Any = None) -> None:
+        """Acceso de bajo nivel para pruebas (consultar el estado de la página)."""
+        if self.view is None:
+            return
+        if callback is None:
+            self._page.runJavaScript(code)
+        else:
+            self._page.runJavaScript(code, 0, callback)
 
+    # ── Interno ─────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    import sys
-    from PySide6.QtWidgets import QApplication
-    
-    app = QApplication(sys.argv)
-    
-    # Crear vista de pasos con árbol de ejemplo
-    steps_view = StepsView()
-    
-    # Cargar árbol simple de ejemplo
-    from integrallab.core.steps.step_tree import create_sample_photomath_tree, StepTree
-    
-    tree = create_sample_photomath_tree()
-    json_str = tree.to_json()
-    
-    print("=== Cargando árbol de ejemplo en StepsView ===")
-    steps_view.load_tree(json_str)
-    
-    sys.exit(app.exec())
+    def _run(self, code: str) -> None:
+        if self.view is not None and self._is_ready:
+            self._page.runJavaScript(code)
+
+    def _send(self, payload: dict[str, Any]) -> None:
+        # JSON es un subconjunto de JavaScript: el árbol viaja como literal, sin eval de texto.
+        self._page.runJavaScript(f"IntegralSteps.render({json.dumps(payload, ensure_ascii=False)})")
+
+    def _on_load_finished(self, ok: bool) -> None:
+        if not ok:
+            self._fail("No se pudo cargar la página del desglose interactivo.")
+
+    def _on_ready(self) -> None:
+        if self._is_ready:
+            return
+        self._is_ready = True
+        self._ready_timer.stop()
+        self.ready.emit()
+        if self._pending is not None:
+            payload, self._pending = self._pending, None
+            self._send(payload)
+
+    def _on_ready_timeout(self) -> None:
+        if not self._is_ready:
+            self._fail("MathJax no terminó de cargar a tiempo.")
+
+    def _fail(self, reason: str) -> None:
+        if self._failed:
+            return
+        self._failed = True
+        logger.warning("Desglose interactivo no disponible: %s", reason)
+        self.loadFailed.emit(reason)

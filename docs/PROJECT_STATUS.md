@@ -1,163 +1,51 @@
 # Estado del proyecto — IntegralLab
 
-> Este archivo se actualiza **al terminar cada sesión** de trabajo.
-> Última actualización: **2026-10-27** — Aplicación completa del parche de auditoría técnico-auditiva (`integrallab-auditoria-2026-10-27.patch`).
+> Este archivo se actualiza **al terminar cada sesión** de trabajo. El historial detallado está en [`SESSION_LOG.md`](SESSION_LOG.md).
+> Última actualización: **2026-10-27** — Sesión 23: aplicación y verificación completa de `integrallab-auditoria-2026-10-27.patch` e `integrallab-limpieza.patch`. **522 pruebas pasando, 2 omitidas** (la de términos privados si no se define `INTEGRALLAB_PRIVATE_TERMS`; y omisión condicional de entorno sin pantalla).
 
-> **Fases 1-12 completadas**: Selector de método, muestreo adaptativo, lienzo 3D a escala real, exportación PDF, diseño *glass/dark*, interpolación numérica (Lagrange/Newton/Splines naturales), Three.js WebGL offline, arandelas por tramos, motor pedagógico y blindaje de seguridad matemática.
+## Resumen
 
-> **Auditoría Enterprise & Suite 3D GeoGebra**:
-> - [x] **Bug 1 (P0)**: Import de `replace` desde `dataclasses` en `main_window.py` para evitar NameError en timeout numérico.
-> - [x] **Bug 2 (P0)**: Evaluación exacta de raíces de orden impar en dominio real negativo (`cbrt(x)`, `x**(1/3)`) vía `prepare_expr_for_real_eval` + `REAL_EVAL_MODULES` en `sampling.py` y `solids.py`.
-> - [x] **Bug 3 (P0)**: Cierre de condición de carrera en `calc_backend.py`: `_ensure_process` protegido con `self._lock` y guarda `conn is None` en `submit()`.
-> - [x] **Bug 4 (P1)**: Ajuste de resolución en exportación a PDF (`QPrinter.PrinterMode.ScreenResolution`).
-> - [x] **Bug 5 (P1)**: Corrección de fórmula LaTeX en `integral_setup_latex` de `solids.py` para restar el radio interno al cuadrado.
-> - [x] **Bug 6 (P1)**: Eliminación de variable huérfana en `latex_render.py`.
-> - [x] **Claridad pedagógica**: Sustitución de la etiqueta ambigua «Cortes en: 1» por «Intersección en: x = 1».
-> - [x] **Suite de Deslizadores 3D**: Deslizador de revolución angular theta, botón de animación paso a paso (GeoGebra), deslizador de rebanada representativa dx/dy y aproximación escalonada por discos de Riemann.
+- Funciona de punta a punta: entrada (texto o editor visual), región 2D, integral y área, sólido 3D (WebGL o Matplotlib) con deslizadores, volumen por los tres métodos con inversión a `dy` por franjas, desarrollo paso a paso interactivo (MathJax sin conexión) e imprimible (PDF).
+- Todo volumen se contrasta con una cuadratura independiente; los 11 casos de inversión de la auditoría coinciden con su forma cerrada.
+- Código heredado sin uso e informes de estado obsoletos retirados completamente con `integrallab-limpieza.patch`.
 
----
+## Hallazgos de las auditorías
 
-## Fase actual
+| ID | Hallazgo | Estado |
+| --- | --- | --- |
+| A1 | Inversión a dy calculaba otra región | ✅ Corregido: franjas horizontales (`core/volume/inversion.py`) + red de seguridad |
+| A2 | Desarrollo con `Integral(...)` y `re(x)` | ✅ Corregido: radios con signo resuelto, sin `Abs` (0 de 8 desarrollos rotos; antes 7 de 8) |
+| A3 | `_clean_latex` borraba los valores absolutos | ✅ Eliminada; `|u|` del usuario se resuelve por tramos |
+| A4 | `cosenh` → `asinh` | ✅ Corregido (2026-10-26) |
+| A5 | «Área» mostraba la integral con signo | ✅ Integral y área por separado (`operations.area_between`) |
+| A6 | `cbrt(x)` en dominio negativo abortaba el cálculo | ✅ Rama real por tramos (`core/volume/pieces.py`) |
+| A7 | Entradas que congelaban la ventana | ✅ Factorial acotado, patrón de puntos lineal y `setMaxLength` en las casillas |
+| A8 | Deslizadores síncronos en los dos motores | ✅ Un cuadro cada 16 ms, solo el motor visible, perfil en caché, cámara conservada |
+| M1 | `solids.py` y `main_window.py` monolíticos | ⏳ Parcial: `core/volume/` y `core/steps/` separados; falta dividir la ventana |
+| M2 | La UI usa privados del dominio (`_evaluate_bounds`) | ⏳ Pendiente (los deslizadores ya no lo llaman por cuadro) |
+| M3 | Límites como texto, reparseados | ⏳ Parcial: los deslizadores usan límites en caché |
+| M4 | Discos con hueco sin partir en cruces | ✅ Discos y Arandelas comparten el cálculo por tramos |
+| M5 | Entradas comunes mal interpretadas | ✅ `x(x+1)`, `ln|x|`, `||x|-1|`, `sinx`, `xsin(x)`, `sinxcosx` (M5). |
+| M6 | Texto corrupto «calcul?» | ✅ Corregido (2026-10-26) |
+| M7 | Respaldo numérico presentado como exacto | ✅ Se muestra «≈» y una nota; sin desarrollo paso a paso en esa ruta |
+| M8 | Pasos con numeración desplazada, regla de la potencia fija y registro mezclado | ✅ Textos neutros, numeración continua, técnica real |
+| M9 | Interpolación en coma flotante y Newton inalcanzable | ⏳ Pendiente |
+| M10 | `latex_render.py` (MathText, `matplotlib.use("Agg")` al importar) | ⏳ Pendiente: sigue para la vista imprimible y el PDF |
+| M11 | Código muerto (`ChatPanel`, `AiPulse`, `differentiate`…) | ⏳ Pendiente |
+| M12 | Documentación desalineada | ✅ README, ARQUITECTURA, AGENTS y este archivo alineados con el código |
+| M13 | Pruebas sin referencia independiente | ✅ `tests/test_volume_inversion.py` compara con forma cerrada y cuadratura |
+| N1–N12 | Hallazgos nuevos del 2026-10-27 | Ver [`AUDITORIA_2026-10-27.md`](AUDITORIA_2026-10-27.md), sección 1.9 |
 
-- ✅ Fase 1–11. Base, UI 2D/3D, Sólidos, LaTeX y Glass/Dark — **COMPLETADA**
-- ✅ Fase 12. Interpolación numérica, Three.js y auditoría técnica — **COMPLETADA (174 tests passing)**
-- ✅ Auditoría del 2026-10-27: inversión por franjas, radios sin valor absoluto, raíces impares reales, área separada de la integral, Discos con hueco por tramos, desglose interactivo con MathJax, deslizadores agrupados por cuadro, parser para entradas comunes — **COMPLETADO**
-- 🔄 Aplicando parche `integrallab-auditoria-2026-10-27.patch`:
+## Pendiente
 
-  ### ✅ Completado
-  - [x] Archivo `integrallab/core/volume/pieces.py` con `is_odd_root()`, `real_branch()`, `sign_cut_points()`, `real_root_form()`
-  - [x] Archivo `integrallab/core/operations.py` con `_real_definite_integral()` y `area_between()`
-  - [x] Función `run()` agregada a `integrallab/__main__.py` para comando instalable
-  - [x] Eliminadas `invert_region_to_variable` de imports y `__all__` en `integrallab/core/__init__.py`
-  - [x] Actualizado `.gitignore`: comentarios en `.vscode/settings.json`, exclusión `IntegralLab-documentacion-*.zip`
-  - [x] Actualizado `README.md`: descripción mejorada, separación integral/área, tabla de métodos con franjas, stack tecnológico completo, instrucciones para servidores sin pantalla
-  - [x] Actualizado `AGENTS.md`: referencia a auditoría 2026-10-27, estructura actualizada, stack tecnológico correcto
-  - [x] Actualizado `pyproject.toml`: versión corregida (2026.10.27), licencia propietaria "Todos los derechos reservados", target-version py310
-  - [x] Archivo `docs/AUDITORIA_2026-10-27.md` actualizado con fecha, código auditado y correcciones
-  - [x] Archivo `docs/PROJECT_STATUS.md` actualizado con estado de aplicación del parche
+1. ✅ **Completado:** aplicado `integrallab-limpieza.patch` (retirados `core/domain/`, `core/migration.py`, `core/mesh.py`, `core/volume/calculation.py`, `core/volume/meshing/`, `legacy_compat/`, `ui/photomath/`, `ui/controllers/`, `resources/js/qwebchannel_bridge.js`, `integrallab/tests/`, `scratch/`, `scripts/validate_api.py`, `scripts/validate_migration.py` y los informes obsoletos).
+2. **Decisión del autor (`pyproject.toml`, no se modificó sin su autorización):** la licencia declarada es `MIT` pero `LICENSE` es «Todos los derechos reservados»; `authors` está vacío; la versión `2026.11.14.3` es posterior a la fecha actual; `asyncio_mode` no corresponde a ningún complemento instalado; el extra `viz3d` instala lo que `PySide6` ya trae; `target-version = "py311"` contradice `requires-python = ">=3.10"`.
+3. M9: puntos de interpolación como `Rational` y selector de método (Newton).
+4. M10: vista imprimible y PDF con MathJax (`QWebEnginePage.printToPdf`) en lugar de PNG de MathText.
+5. M1/M2: dividir `ui/main_window.py` (reportes, deslizadores, trabajos) y exponer `evaluate_bounds` público.
+6. Casos que tardan más de 8 s en SymPy (p. ej. `exp(-x**2)*cos(3*x)**2 + 1`): pasan a la ruta numérica, sin desarrollo.
+7. Pendiente del autor (privacidad): correo privado en Git y limpieza del historial antes de publicar (ver `PRIVACIDAD.md`).
 
-  ### ⏳ Pendiente (requiere decisión del autor)
-  - Interpolación con coeficientes exactos y selector de Newton (M9)
-  - Retirar el renderizado PNG de la vista imprimible (M10)
-  - Panel de IA sin conectar (M11)
-  - Dividir `solids.py` y `main_window.py` (M1)
-  - Decidir sobre los metadatos de `pyproject.toml` (licencia declarada, autor, versión)
+## Siguiente tarea atómica
 
----
-
-## Estado por fases
-
-| Fase | Descripción | Estado |
-|---|---|---|
-| 1. Planificación | Definir objetivos, fases, reglas de trabajo | ✅ Completada |
-| 2. Base funcional | Entorno + estructura base (docs, gobernanza, pyproject, core inicial) | ✅ Completada |
-| 3. UI básica + 2D | PySide6 + integración Matplotlib (viz) + ventana principal + `__main__.py` | ✅ Completada |
-| 4. Operaciones 2D | Límites de integración, sombreado de región 2D, cálculo de integral definida | ✅ Completada |
-| 5. Motor de Sólidos | Discos, Arandelas, Casquillos, recomendador y mallas 3D numéricas | ✅ Completada |
-| 6. Visualización 3D | Canvas 3D desacoplado (`integrallab/viz/canvas3d.py`) con Matplotlib `Axes3D` | ✅ Completada |
-| 7. UI de Sólidos | Pestañas 2D/3D, panel de configuración de sólidos y desarrollo pedagógico | ✅ Completada |
-| 8. Pasos explicados | SolutionStep en VolumeResult y pestaña "Desarrollo" con desglose paso a paso | ✅ Completada |
-| **8.1 Refinamiento LaTeX** | Renderizado offline de fórmulas LaTeX a Base64 PNG en reportes pedagógicos | ✅ Completada |
-| **8.2 Motor pedagógico universitario** | Detector de técnica de integración, 7 pasos, notación `[R(x)]²` estándar | ✅ Completada |
-| **9. Exportación a PDF** | Botón "Exportar a PDF" en pestaña Desarrollo con `QPrinter`/`QFileDialog` | ✅ Completada |
-| **11. Refinamiento pedagógico & 3D interactivo** | Bugs LaTeX corregidos, jerga colombiana, paleta Blue-Gray, NavigationToolbar, rotación y zoom 3D | ✅ Completada |
-| **11.1 Rediseño visual glass/dark** | Tema oscuro, `GlassCard`, canvas premium (glow, tooltip, revelado) | ✅ Completada |
-| **12. Interpolación y despeje analítico en dy** | Interpolación numérica (Lagrange, Newton, Splines), parseo de puntos discretos, despeje analítico con SymPy en dy | ✅ Completada (178 tests passing) |
-| **Auditoría 2026-10-27** | Inversión por franjas, radios sin `Abs`, raíces reales, área absoluta, MathJax offline, agrupación de deslizadores | ✅ Completado |
-
----
-
-## Entorno verificado
-
-| Elemento | Estado |
-|---|---|
-| Sistema operativo | Windows (PowerShell) |
-| Python | 3.14 (desarrollo), 3.13 (verificación suite) |
-| PySide6 | ✅ QtWebEngine y QWebChannel incluidos |
-| SymPy | ✅ Incluye `manualintegrate` para reglas de integración del desglose |
-| mpmath | ✅ Instalado para cuadratura numérica independiente |
-| Matplotlib | ✅ Integrado en Qt para visualización 2D/3D |
-| Three.js | ✅ r160, empaquetado offline en `integrallab/resources/` |
-| MathJax | ✅ 3.2.2 (`tex-svg-full.js`), sin conexión |
-| MathLive | ✅ 0.111.1, sin conexión |
-
----
-
-## Estadísticas de pruebas (resultado de referencia)
-
-- **Total**: 524 pruebas definidas en `tests/`
-- **Pasa**: 523 pruebas pasando
-- **Omite**: 1 prueba omitida (de términos privados, si no se define `INTEGRALLAB_PRIVATE_TERMS`)
-- **Falla**: 0 pruebas fallando
-
-Pruebas clave:
-- Parser seguro: ✅
-- Operaciones (integral definida con ramas reales): ✅
-- Área entre curvas partida en cruces: ✅
-- Muestreo adaptativo con raíces impares: ✅
-- Interpolación (Lagrange/Newton/Splines): ✅
-- Sólidos por discos/arandelas/casquillos: ✅
-- Inversión por franjas horizontales: ✅
-- Desglose interactivo con MathJax: ✅
-- Deslizadores agrupados por cuadro: ✅
-
----
-
-## Arquitectura actualizada
-
-### Estructura de carpetas
-
-```
-integrallab/
-├── core/                  ← dominio matemático puro (sin Qt)
-│   ├── steps/             ← árbol de pasos del desglose interactivo
-│   └── volume/            ← tramos de signo y inversión a dy por franjas
-│       ├── pieces.py      ← detección de raíces impares, ramas reales, puntos de corte
-│       └── inversion.py   ← franjas horizontales con bordes reales
-├── ui/                    ← PySide6 (ventana, proceso de cálculo, tema glass/dark)
-│   ├── views/             ← steps_view.py (desglose interactivo en QWebEngineView)
-│   └── widgets/           ← visual_input.py (editor visual), glass, aurora
-├── viz/                   ← Matplotlib 2D/3D y visor Three.js
-└── resources/             ← threejs_bundle.html + js/, mathlive/, mathjax/, steps/, visual_input/
-tests/                     ← suite de pruebas con pytest (524 tests)
-docs/                      ← arquitectura, estado, auditorías, decisiones, privacidad
-```
-
-### Reglas de arquitectura clave
-
-- ✅ La UI **no importa ni usa SymPy directamente**: todo pasa por `integrallab.core`
-- ✅ `core` no importa Qt ni Matplotlib
-- ✅ Visualización desacoplada: `viz` recibe datos numéricos (lista de puntos) y no hace cálculo simbólico
-- ✅ No construir sobre `core/domain/`, `core/migration.py`, `core/mesh.py`, `core/volume/calculation.py`, `core/volume/meshing/`, `legacy_compat/`, `ui/photomath/`, `ui/controllers/` ni `integrallab/tests/`: código heredado sin uso
-
----
-
-## Documentación actualizada
-
-- ✅ [`docs/README.md`](docs/README.md): índice y orden de lectura
-- ✅ [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md): capas, módulos, procesos, flujos
-- ✅ [`docs/DESGLOSE_INTERACTIVO.md`](docs/DESGLOSE_INTERACTIVO.md): uso y diseño del desglose «estilo Photomath»
-- ✅ [`docs/EDITOR_VISUAL.md`](docs/EDITOR_VISUAL.md): editor visual de fórmulas
-- ✅ [`docs/AUDITORIA_2026-10-27.md`](docs/AUDITORIA_2026-10-27.md): auditoría archivo por archivo, validación matemática
-- ✅ [`docs/PRIVACIDAD.md`](docs/PRIVACIDAD.md): qué datos no entran al repositorio
-- ✅ [`AGENTS.md`](AGENTS.md): reglas de arquitectura y trabajo para agentes de IA
-
----
-
-## Componentes de terceros
-
-Ver [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-
-**Mit (Three.js, MathLive)**: conservar el aviso de copyright junto a los archivos.
-**Apache-2.0 (MathJax)**: conservar el texto de la licencia junto al archivo distribuido.
-**LGPL-3.0 (PySide6/Qt)**: si se distribuye un ejecutable, Qt debe quedar enlazado dinámicamente.
-
----
-
-## Notas finales
-
-- 📌 **Ver [`AGENTS.md`](AGENTS.md)** antes de empezar cualquier trabajo en el código.
-- 📌 **Ver [`docs/PRIVACIDAD.md`](docs/PRIVACIDAD.md)** para las reglas de privacidad del repositorio.
-- 📌 Los archivos `integrallab/core/domain/*`, `integrallab/core/migration.py`, `integrallab/core/mesh.py`, `integrallab/core/volume/calculation.py`, `integrallab/core/volume/meshing/*`, `legacy_compat/*`, `ui/photomath/*`, `ui/controllers/*` y `integrallab/tests/` **NO SE DEBEN USAR**: son código heredado sin uso y en parte no importable.
-
-<EOF>
+Selector de método en la pestaña de interpolación y conversión de puntos a `Rational` (hallazgo M9).

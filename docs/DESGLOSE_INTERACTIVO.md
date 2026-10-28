@@ -1,233 +1,95 @@
-# DESGLOSE INTERACTIVO — Estilo Photomath
+# Desglose interactivo del desarrollo («estilo Photomath»)
 
-> Guía para implementar un desglose paso a paso «estilo Photomath» en IntegralLab.
-> **Fecha:** 2026-10-27  
-> **Autor:** Johan Stiven Lasso Aguirre  
-> **Año de referencia:** 2026
+La pestaña **Desarrollo** muestra el cálculo como un árbol de pasos: al tocar una parte resaltada de una fórmula se despliega, justo debajo, el paso que explica cómo se obtuvo, y ese paso puede tener a su vez partes resaltadas. Este documento explica cómo se usa, cómo está construido y cómo mantenerlo.
 
----
+![Desglose interactivo: binomio al cuadrado y reglas de integración desplegados](img/desglose-interactivo.png)
 
-## 1. Objetivo
+## Uso
 
-Implementar una visualización interactiva que muestre el proceso de cálculo de integrales y volúmenes de sólidos por secciones transversales, similar a las herramientas «estilo Photomath».
+1. Calcule un sólido como siempre y abra la pestaña **Desarrollo**.
+2. Las partes de color azul son clicables (también con el teclado: Tab y Enter). Al tocarlas se despliega su paso y se vuelven naranja; al tocarlas otra vez se pliega.
+3. **¿Cómo se obtiene? (n pasos)** despliega todos los subpasos de una tarjeta. **Desplegar todo** y **Plegar todo** actúan sobre el árbol completo.
+4. El botón **📄 Vista imprimible** cambia a la vista clásica de 7 pasos, que es la que se exporta a PDF. **🔎 Desglose interactivo** vuelve. La elección se recuerda (`QSettings`, clave `results/interactive_steps`).
 
-**Resultado esperado:**
-- El usuario ve cada paso del cálculo (simbólico y numérico)
-- Las fórmulas se renderizan en LaTeX con MathJax o MathLive
-- Los gráficos 3D/2D se actualizan en tiempo real según el progreso
-- La interacción permite avanzar paso a paso, repetir pasos o saltar
+Qué se puede desplegar, por ejemplo, en `f(x) = x² + 1` girando alrededor del eje X:
 
----
+| Tarjeta | Parte clicable | Se despliega |
+| --- | --- | --- |
+| Planteamiento | `[x² + 1]²` | De dónde sale el radio R(x) (distancia de la curva al eje, con su signo) |
+| Desarrollar el integrando | `(x² + 1)²` | Binomio al cuadrado: `(a + b)² = a² + 2ab + b²` con a y b concretos |
+| Primitiva | `∫(x⁴ + 2x² + 1) dx` | Integrar término a término → cada término con la regla de la potencia |
+| Comprobación | `d/dx [F]` | La derivada de F con su regla (suma, producto, cadena) |
+| Teorema Fundamental | `F(1)`, `F(0)` | Cada evaluación |
+| Resultado (por tramos) | `V₁`, `V₂` | El tramo correspondiente |
 
-## 2. Arquitectura del desglose
+Con inversión a `dy` (por ejemplo, Discos alrededor del eje Y) aparece primero **Despejar x en función de y**, con cada franja horizontal y sus bordes reales.
 
-### Flujo de trabajo:
+## Arquitectura
 
-```
-Usuario selecciona problema
-    ↓
-Parser analiza expresión → (core/parser.py)
-    ↓
-Análisis simbólico → (core/steps/sympy_to_steps.py)
-    ↓
-Construcción del árbol de pasos → (core/steps/step_tree.py)
-    ↓
-Renderizado visual paso a paso → (ui/views/steps_view.py + resources/steps/)
-    ↓
-Visualización gráfica 2D/3D → (integrallab/viz/)
-```
-
-### Componentes clave:
-
-#### `core/steps/sympy_to_steps.py`
-- **Responsabilidad:** Convertir expresiones SymPy a una secuencia de pasos visuales.
-- **Entrada:** Expresión simbólica (ej. `(x**2 - 1)**(3/2)`).
-- **Salida:** Lista de diccionarios con:
-  ```python
-  [
-    {
-      "type": "analysis",
-      "step": "Derivar f(x) = x^(3/2)",
-      "formula": r"\frac{d}{dx} x^{3/2}",
-      "visual": "<svg>...</svg>"  # o referencia a gráfico PNG
-    },
-    {
-      "type": "integral",
-      "step": "Integrar A(z) = \pi (1 - z^2)",
-      "formula": r"\int_{-1}^{1} \pi (1 - z^2)\,dz"
-    }
-  ]
-  ```
-
-#### `core/steps/step_tree.py`
-- **Responsabilidad:** Construir una estructura jerárquica del árbol de pasos.
-- **Funciones principales:**
-  - `build_tree(expression)`: Construye el árbol completo desde la expresión.
-  - `get_steps_up_to_index(index)`: Devuelve los primeros N pasos para visualización gradual.
-
-#### `core/steps/latex_to_png.py`
-- **Responsabilidad:** Convertir fórmulas LaTeX a imágenes PNG usando MathJax o librerías locales.
-- **Entrada:** Fórmula LaTeX (string).
-- **Salida:** Imagen PNG en memoria o archivo temporal.
-
----
-
-## 3. Integración con UI
-
-### `ui/views/steps_view.py`
-
-**Responsabilidad:** Vista interactiva del desglose paso a paso.
-
-**Funciones principales:**
-```python
-def load_problem(expression):
-    """Carga el problema y construye el árbol de pasos."""
-    ...
-
-def set_current_step_index(index):
-    """Establece el índice del paso actual para visualización."""
-    ...
-
-def advance_to_next_step():
-    """Avanza al siguiente paso en la secuencia."""
-    ...
-
-def reset_view():
-    """Reinicia la vista al primer paso."""
-    ...
+```mermaid
+flowchart LR
+  subgraph CALC["Proceso de cálculo (core, sin Qt)"]
+    SO["solids._volume_from_pieces"] --> VT["steps.volume.build_volume_tree"]
+    VT --> AL["steps.algebra<br/>binomios, productos"]
+    VT --> IT["steps.integral<br/>reglas de manualintegrate"]
+    VT --> DT["steps.derivative<br/>suma, producto, cadena"]
+    AL & IT & DT --> LX["steps.latex<br/>\\class{step-ID}{…}"]
+  end
+  VT -->|"VolumeResult.step_tree (StepNode, pickle)"| MW["ui.main_window<br/>_steps_payload"]
+  MW -->|"set_tree → JSON"| SV["ui.views.steps_view.StepsView<br/>QWebEngineView + QWebChannel"]
+  SV -->|"IntegralSteps.render"| JS["resources/steps/steps.js<br/>MathJax 3 SVG sin conexión"]
+  JS -->|"bridge.stepToggled(id, abierto)"| SV
 ```
 
-**Interfaz gráfica:**
-- Barra de progreso horizontal/vertical con pasos numerados
-- Área principal para mostrar fórmula actual y gráfico asociado
-- Botones: «Paso anterior», «Siguiente paso», «Repetir desde principio»
-- Opciones: Mostrar solo fórmulas, solo gráficos, ambos
+### 1. Modelo: `integrallab/core/steps/`
 
-### `resources/steps/`
+| Módulo | Contenido |
+| --- | --- |
+| `model.py` | `StepNode(id, rule, title, explanation, latex, children)` inmutable; `IdGenerator` (ids `s1`, `s2`…; tope `MAX_TREE_NODES = 400`); `class_targets(latex)`. |
+| `latex.py` | `TaggingLatexPrinter`: subclase del impresor LaTeX de SymPy que envuelve en `\class{step-ID}{…}` las subexpresiones marcadas. Reconoce la subexpresión por su árbol, no por su texto. Solo marca subexpresiones que aparecen una vez (en `x·eˣ` la `x` del exponente no abre el paso de «u = x»). |
+| `integral.py` | Convierte el árbol de reglas de `sympy.integrals.manualintegrate.integral_steps` en `StepNode`: suma, constante, potencia, sustitución (cambio de variable, despeje de x, integral en u, vuelta a x), partes (elección de u y dv, cálculo de v, fórmula), partes cíclicas (reconstruidas a mano: SymPy deja sus integrandos en `None`), identidades, sustitución trigonométrica. `describe_technique` resume la técnica principal (una sustitución lineal como u = 2x no cuenta como técnica). `antiderivative` devuelve la misma primitiva que muestra el árbol. |
+| `derivative.py` | Árbol de `d/dx`: constante, variable, suma, constante por función, cociente, producto, potencia, cadena (potencia, función elemental, exponencial de base constante), derivación logarítmica, valor absoluto. Se usa en la **Comprobación**: derivar F devuelve el integrando. |
+| `algebra.py` | Binomio al cuadrado y al cubo (con a y b concretos), cuadrado de un polinomio, distributiva, reducción de términos semejantes; factorización (factor común y factores). |
+| `volume.py` | `build_volume_tree`: raíz «Desarrollo del volumen» con Planteamiento (radios), Desarrollar el integrando, Primitiva (+ Comprobación), Teorema Fundamental y Resultado; un nodo por tramo cuando hay cruces o franjas. |
 
-**Archivos necesarios:**
-- `steps.html`: Página HTML del editor visual de pasos (similar a MathLive).
-- `steps.css`: Estilos CSS para la interfaz.
-- `steps.js`: Lógica JavaScript para interacción con QWebChannel (PySide6).
-- `steps_bundle.html` (opcional): Versión empaquetada sin conexión.
+Rigor que comprueban las pruebas (`tests/test_steps_tree.py`):
 
----
+- Toda ancla `\class{step-ID}` apunta a un nodo que existe en el árbol.
+- Ningún paso contiene `Integral(` ni `re(`.
+- La primitiva del árbol, derivada, devuelve el integrando; la regla raíz es la de un libro (producto, cadena, cociente, partes, sustitución, identidad).
+- El árbol se puede serializar con `pickle` (viaja por la tubería del proceso de cálculo).
 
-## 4. Interfaz de visualización paso a paso
+### 2. Vista: `integrallab/ui/views/steps_view.py`
 
-### Elementos de la interfaz:
+`StepsView` es un `QWidget` con un `QWebEngineView` que carga `resources/steps/index.html`:
 
-1. **Barra de navegación de pasos:**
-   - Lista numerada de todos los pasos disponibles
-   - Indicador del paso actual (resaltado)
-   - Buscador de pasos por keyword (opcional)
+- **Python → JavaScript.** `set_tree(tree, title=…, meta=…)` serializa `tree.to_dict()` con `json.dumps` y llama `IntegralSteps.render(payload)`. Si la página o MathJax aún no están listos, el árbol queda pendiente y se envía al recibir `ready`.
+- **JavaScript → Python.** Objeto `bridge` publicado por `QWebChannel`: `ready()`, `rendered(n)` y `stepToggled(id, abierto)`, que se reexpone como la señal `StepsView.stepToggled`.
+- **Seguridad.** La página solo navega dentro de `integrallab/resources/` (`_LocalPage.acceptNavigationRequest`); tiene una política de contenido sin red; títulos y explicaciones se insertan con `textContent` (nunca `innerHTML`); MathJax corre sin menú contextual. El LaTeX lo produce SymPy en el dominio, no el usuario.
+- **Fallo.** Sin QtWebEngine o sin los archivos, `steps_view_support()` lo indica y la ventana usa la vista imprimible; si MathJax no carga en 20 s, `loadFailed` hace lo mismo y se avisa en la barra de estado.
 
-2. **Área principal de fórmula:**
-   - Renderizado LaTeX con MathJax o MathLive
-   - Soporte para interactividad (expansión/contracción de subpaso)
+`MainWindow` crea la vista la primera vez que se abre la pestaña con el modo interactivo activo (QtWebEngine tarda en arrancar) y le pasa el último árbol (`_steps_payload`). Los mensajes de error o cancelación llegan a las dos vistas (`_set_steps_message`).
 
-3. **Área gráfica asociada:**
-   - Gráfico 2D (Matplotlib canvas PNG) o 3D (Three.js WebGL)
-   - Actualización en tiempo real según el paso actual
+### 3. Página: `integrallab/resources/steps/`
 
-4. **Explicación textual:**
-   - Descripción del significado geométrico/algebraico del paso
-   - Contexto para estudiantes/usuarios novatos
+| Archivo | Papel |
+| --- | --- |
+| `index.html` | Configuración de MathJax (`tex.packages: ["html"]` para `\class`, `svg.fontCache: "local"`, `enableMenu: false`, `typeset: false`) y carga de `../mathjax/tex-svg-full.js` y `qrc:///qtwebchannel/qwebchannel.js`. |
+| `steps.js` | Lógica de eventos: índice id → nodo y id → padre; tarjetas construidas al primer despliegue (perezoso); `MathJax.tex2svgPromise` por fórmula; cada `<g class="step-ID">` del SVG se marca como botón (`tabindex`, `role`, `aria-label`, `<title>`); clic o Enter alternan el paso; si el paso vive en otra tarjeta (V₁ en el resultado) se abre allí, se desplaza la vista y se resalta. |
+| `steps.css` | Mismos colores que la vista imprimible; partes clicables en azul, abiertas en naranja. |
 
-### Ejemplo de flujo visual:
+Dos detalles de MathJax que costaron un error cada uno:
 
-```
-Paso 1: Análisis de la función
-───────────────────────────────
-f(x) = x^(3/2)
-gráfico: [imagen 2D de f(x)]
-explicación: "Derivamos la función para encontrar el área..."
+- `tex2svgPromise` no inserta la hoja de estilos de la salida SVG: sin `MathJax.svgStylesheet()` se ve el MathML de accesibilidad como texto duplicado. `IntegralSteps.mathReady` la añade.
+- Con `fontCache: "global"` los glifos quedan en una caché que `tex2svgPromise` no adjunta al documento y la fórmula se ve vacía (solo las rayas de fracción). Se usa `"local"`.
 
-└─→ Siguiente paso ↓
+## Pruebas
 
-Paso 2: Integración simbólica
-───────────────────────────────
-A(z) = \pi (1 - z^2)
-gráfico: [imagen de sección transversal circular]
-explicación: "El área de cada disco es πr² donde r = √(1-z²)"
+- `tests/test_steps_tree.py`: rigor del árbol (anclas, primitivas, reglas, técnicas de los 11 integrandos de la auditoría, binomios, factorización, tope de nodos, desarrollo de 10 volúmenes).
+- `tests/test_steps_view.py`: la página carga MathJax sin conexión; un clic en `R(x)` despliega su paso y llega a Python por `QWebChannel`; otro clic lo pliega; `reveal` abre un paso profundo con sus antepasados; el texto con `<img onerror>` no se interpreta como HTML; la ventana crea la vista al abrir la pestaña y permite volver a la imprimible.
 
-└─→ Siguiente paso ↓
+## Mantenimiento
 
-Paso 3: Evaluación numérica
-───────────────────────────────
-V = \int_{-1}^{1} \pi (1 - z^2)\,dz
-gráfico: [imagen del sólido de revolución]
-explicación: "Integramos sobre el dominio [-1, 1]..."
-
-└─→ Siguiente paso ↓
-```
-
----
-
-## 5. Consideraciones técnicas
-
-### Dependencias visuales:
-
-- **MathJax:** Renderizado de fórmulas LaTeX en la web.
-- **MathLive (v0.111.1):** Editor visual de entrada de fórmulas (ya empaquetado).
-- **Matplotlib:** Canvas 2D para gráficos estáticos.
-- **Three.js r160:** Visor 3D WebGL para sólidos de revolución (ya empaquetado).
-
-### Rendimiento:
-
-- **Generación de pasos:** Se realiza una vez por problema y se cachea en memoria.
-- **Renderizado de fórmulas:** MathJax/Matplotlib pre-renderizan a PNG donde es posible.
-- **Gráficos 3D:** Three.js carga la escena WebGL en primera instancia, luego actualiza datos numéricos.
-
-### Accesibilidad:
-
-- Soporte para navegación por teclado (Tab, Enter/Space).
-- Contraste de colores adecuado (tema glass/dark con paletas accesibles).
-- Texto alternativo para gráficos e imágenes de fórmulas.
-
----
-
-## 6. Pruebas y validación
-
-### Tests unitarios:
-
-- **`tests/test_steps_conversion.py`:** Valida `sympy_to_steps()` contra casos conocidos.
-- **`tests/test_step_tree.py`:** Verifica construcción del árbol de pasos.
-- **`tests/test_latex_to_png.py`:** Asegura que PNG se genera correctamente desde LaTeX.
-
-### Tests de integración:
-
-- **`tests/ui_test_steps_view.py`:** Valida interacción UI con backend de steps.
-- **`tests/viz_test_steps_rendering.py`:** Verifica renderizado 2D/3D sincronizado.
-
----
-
-## 7. Estado actual (2026-10-27)
-
-### Completado:
-- ✅ `core/steps/step_tree.py`: Construcción básica del árbol de pasos
-- ✅ `core/steps/sympy_to_steps.py`: Conversión inicial de expresiones
-- ✅ `ui/views/steps_view.py`: Vista PySide6 con navegación básica
-
-### En progreso:
-- 🟡 Integración visual paso a paso con fórmulas LaTeX renderizadas
-- 🟡 Sincronización gráficos 2D/3D ↔️ pasos del cálculo
-- 🟡 Optimización de rendimiento (cacheado, pre-renderizado)
-
-### Pendiente:
-- ⏳ Empaquetado web embebido en `resources/steps/`
-- ⏳ Interacción avanzada (repetir pasos, saltar secciones)
-- ⏳ Soporte para problemas multi-integrando
-
----
-
-## 8. Referencias
-
-- [`AGENTS.md`](../../AGENTS.md): Reglas de arquitectura y trabajo
-- [`docs/EDITOR_VISUAL.md`](EDITOR_VISUAL.md): Editor visual de fórmulas
-- [`docs/AUDITORIA_2026-10-27.md`](AUDITORIA_2026-10-27.md): Auditoría técnica reciente
-- [`integrallab/viz/`](../../integrallab/viz/): Implementación de visualización 2D/3D
-
----
-
-> **Nota:** Este documento se actualiza con cada avance significativo en la implementación del desglose interactivo.
+- **Añadir una regla de integración o derivación:** un caso en `_texts` y en `_node` (`integral.py`) o en `_node` (`derivative.py`), con su prueba en `tests/test_steps_tree.py`. Marcar con `tags[subexpresión] = hijo.id` la parte de la fórmula que el hijo explica.
+- **Actualizar MathJax:** reemplazar `integrallab/resources/mathjax/tex-svg-full.js` y `LICENSE_MATHJAX.txt` por los del paquete `mathjax` de npm (carpeta `es5/`), cambiar la versión en `THIRD_PARTY_NOTICES.md` y pasar `tests/test_steps_view.py`.
+- **Límites:** integrandos con `Piecewise` (splines) o más de 250 operaciones no se desglosan (se muestra la primitiva con una nota); árboles de más de 400 nodos se resumen.

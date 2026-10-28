@@ -24,8 +24,10 @@
 
 - Leer `AGENTS.md` (este archivo), `docs/README.md` (índice de la documentación) y `docs/PROJECT_STATUS.md` antes de empezar.
 - Para entender cómo encajan los módulos, leer `docs/ARQUITECTURA.md` en lugar de recorrer el código.
-+ Antes de tocar `core/solids.py`, `core/volume/`, el parser, los deslizadores 3D o los reportes, revisar `docs/AUDITORIA_2026-10-27.md` (estado archivo por archivo y validación matemática): hay errores ya corregidos que no se deben reintroducir (radios con `Abs`, inversión que adivina la región, raíz cúbica compleja, área con signo) y pendientes que no se deben dar por buenos.
-+ Antes de tocar el editor visual, leer `docs/EDITOR_VISUAL.md`; antes de tocar el desglose paso a paso (`core/steps/`, `ui/views/steps_view.py`, `resources/steps/`), leer `docs/DESGLOSE_INTERACTIVO.md`.
+- Antes de tocar `core/solids.py`, `core/volume/`, el parser, los deslizadores 3D o los reportes, revisar `docs/AUDITORIA_2026-10-27.md` (estado archivo por archivo y validación matemática): hay errores ya corregidos que no se deben reintroducir (radios con `Abs`, inversión que adivina la región, raíz cúbica compleja, área con signo) y pendientes que no se deben dar por buenos.
+- Antes de tocar el editor visual, leer `docs/EDITOR_VISUAL.md`; antes de tocar el desglose paso a paso (`core/steps/`, `ui/views/steps_view.py`, `resources/steps/`), leer `docs/DESGLOSE_INTERACTIVO.md`.
+- No construir sobre `core/domain/`, `core/migration.py`, `core/mesh.py`, `core/volume/calculation.py`, `core/volume/meshing/`, `legacy_compat/`, `ui/photomath/`, `ui/controllers/` ni `integrallab/tests/`: son código heredado sin uso y en parte no importable (ver la auditoría).
+- No escribir informes de estado en la raíz del repositorio: el estado va en `docs/PROJECT_STATUS.md` y el historial en `docs/SESSION_LOG.md`. Toda cifra de pruebas sale de una ejecución real de `pytest`.
 - Leer **solo el archivo** que se va a modificar, no el proyecto entero.
 - Para archivos largos, usar `read_file` con `start_line`/`end_line` para leer solo las regiones de interés.
 - Para búsquedas, usar `glob`/`rg` con patrones específicos, no listados recursivos del árbol completo.
@@ -47,10 +49,9 @@
 - No escribir en ningún archivo (código, documentación, registros de sesión, mensajes de prueba) correos, rutas absolutas de carpetas personales (`C:\Users\<usuario>`, `/home/<usuario>`), nombres de usuario del equipo o de cuentas, nombres de equipo, direcciones IP ni credenciales.
 - Usar rutas relativas a la raíz del repositorio. En los registros de sesión, el entorno se describe con sistema operativo y versiones, sin ruta.
 - `tests/test_privacy.py` debe pasar siempre. No añadir excepciones a sus listas para «hacerla pasar» con un dato personal.
-+ **Nota importante**: Este parche también incluye cambios en `core/steps/`, `core/volume/`, y archivos relacionados con el desglose paso a paso.
-- No construir sobre `core/domain/`, `core/migration.py`, `core/mesh.py`, `core/volume/calculation.py`, `core/volume/meshing/`, `legacy_compat/`, `ui/photomath/`, `ui/controllers/` ni `integrallab/tests/`: son código heredado sin uso y en parte no importable (ver la auditoría).
-- No escribir informes de estado en la raíz del repositorio: el estado va en `docs/PROJECT_STATUS.md` y el historial en `docs/SESSION_LOG.md`. Toda cifra de pruebas sale de una ejecución real de `pytest`.
-- No escribir en el repositorio los términos privados que se quieren buscar; se pasan en la variable de entorno `INTEGRALLAB_PRIVATE_TERMS`. (referencia)
+- No escribir en el repositorio los términos privados que se quieren buscar; se pasan en la variable de entorno `INTEGRALLAB_PRIVATE_TERMS`.
+
+## 4. Estructura de carpetas (referencia)
 
 ```
 <raíz del repositorio>
@@ -68,6 +69,7 @@
 │   ├── TECHNICAL_DECISIONS.md ← decisiones y por qué (append-only)
 │   ├── AUDITORIA_2026-10-27.md← auditoría archivo por archivo, validación matemática y plan
 │   ├── AUDITORIA_2026-10-24.md← auditoría anterior (A1–A8, M1–M13; histórica)
+│   ├── DESGLOSE_INTERACTIVO.md← desglose paso a paso «estilo Photomath»
 │   ├── EDITOR_VISUAL.md       ← editor visual de fórmulas
 │   ├── PRIVACIDAD.md          ← qué datos no entran al repositorio
 │   ├── img/                   ← capturas usadas en la documentación
@@ -88,7 +90,7 @@
 
 ## 5. Stack tecnológico
 
-+ **Python 3.10 o superior** (el autor desarrolla en 3.14; la suite se verificó en 3.13)
+- **Python 3.10 o superior** (el autor desarrolla en 3.14; la suite se verificó en 3.13)
 - **PySide6** — UI gráfica (capa `ui`), incluidos QtWebEngine y QWebChannel
 - **SymPy** — álgebra simbólica (capa `core`), incluido `manualintegrate` para las reglas de integración del desglose
 - **mpmath** — cuadratura de referencia (`numeric_volume`)
@@ -108,7 +110,7 @@ Licencias de terceros: `THIRD_PARTY_NOTICES.md`.
 | 12. Interpolación numérica, Three.js y auditoría técnica | ✅ Completada |
 | Editor visual de fórmulas | ✅ Completado (2026-10-24) |
 | Documentación y privacidad | ✅ Completado (2026-10-24) |
-| Auditoría del 2026-10-27: inversión por franjas, radios con signo, raíces reales, área, desglose interactivo, deslizadores, parser | ✅ Completado (523 pruebas pasando y 1 omitida)
+| Auditoría del 2026-10-27: inversión por franjas, radios con signo, raíces reales, área, desglose interactivo, deslizadores, parser | ✅ Completado (523 pruebas pasando y 1 omitida) |
 | Limpieza de código heredado, M1/M2, M9–M11 y metadatos de `pyproject.toml` | ⏳ Pendiente (requiere decisión del autor) |
 
 Véase `docs/PROJECT_STATUS.md` para el estado detallado.
