@@ -1,7 +1,7 @@
-# AUDITORÍA TÉCNICA 2026-10-27 — IntegralLab
-
-> Auditoría archivo por archivo, validación matemática y plan de acción.
-> **Fecha:** 2026-10-27  
+# Documento de Auditoría Total — IntegralLab
+> **Fecha:** 27 de octubre de 2026 · **Código auditado:** commit `b9642d7` (rama principal) · **Comparado con:** `adcedc7` y los parches del 2026-10-24
+**Correcciones:** `integrallab-auditoria-2026-10-27.patch` (principal) e `integrallab-limpieza.patch` (opcional, solo borra)
+**Verificación:** 523 pruebas pasando y 1 omitida tras el parche  
 > **Autor:** Johan Stiven Lasso Aguirre  
 > **Año de referencia:** 2026
 
